@@ -170,10 +170,10 @@ model Sale {
   createdByUserId String
   createdAt       DateTime   @default(now())
 
-  org             Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  project         Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  unit            Unit            @relation(fields: [unitId], references: [id], onDelete: Cascade)
-  buyer           Buyer           @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  org             Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  unit            Unit            @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  buyer           Buyer           @relation(fields: [buyerId], references: [id], onDelete: Restrict)
   scheduleEntries ScheduleEntry[]
   payments        Payment[]
   documents       Document[]
@@ -214,14 +214,17 @@ model Payment {
   reference        String?
   note             String?
   recordedByUserId String
-  /// Payments are immutable. A mistake is voided, never edited or deleted.
+  /// Payments are immutable by policy: a mistake is voided below, never edited.
+  /// Deletion is Restrict-protected — this row cannot be deleted while an
+  /// allocation or document references it, and no ancestor (Sale, Unit,
+  /// Organization, Project) can cascade-delete it away.
   voidedAt         DateTime?
   voidedByUserId   String?
   voidReason       String?
   createdAt        DateTime      @default(now())
 
-  org         Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  sale        Sale                @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  org         Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  sale        Sale                @relation(fields: [saleId], references: [id], onDelete: Restrict)
   allocations PaymentAllocation[]
   document    Document?
 
@@ -235,8 +238,8 @@ model PaymentAllocation {
   scheduleEntryId String
   amountMinor     BigInt
 
-  payment       Payment       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
-  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Cascade)
+  payment       Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
 
   @@unique([paymentId, scheduleEntryId])
   @@index([scheduleEntryId])
@@ -256,10 +259,10 @@ model Document {
   paymentId       String?      @unique
   createdAt       DateTime     @default(now())
 
-  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  sale          Sale           @relation(fields: [saleId], references: [id], onDelete: Cascade)
-  scheduleEntry ScheduleEntry? @relation(fields: [scheduleEntryId], references: [id], onDelete: Cascade)
-  payment       Payment?       @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  sale          Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  scheduleEntry ScheduleEntry? @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
+  payment       Payment?       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
 
   @@unique([orgId, number])
   @@index([saleId, type])
