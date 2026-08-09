@@ -1,9 +1,10 @@
 import bcrypt from 'bcryptjs'
+import { Prisma } from '@prisma/client'
 import { z } from 'zod'
 import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
-import { reserveUnit } from '@/server/services/units'
+import { constraintTargetIncludes, reserveUnit } from '@/server/services/units'
 import { toMinor } from '@/domain/currency'
 import {
   DEFAULT_TERM_MONTHS,
@@ -99,38 +100,62 @@ export function summariseSale(
   }
 }
 
+const DUPLICATE_EMAIL_MESSAGE = 'An account with that email already exists. Please sign in.'
+
 export async function registerBuyer(orgId: string, input: BuyerRegistrationInput) {
+  // Cheap pre-check: gives the common case (no race) a clean answer without
+  // burning a transaction. It is not sufficient on its own — two concurrent
+  // registrations for the same email can both pass it, so the transaction
+  // below still has to guard the actual insert.
   const existing = await prisma.user.findUnique({ where: { email: input.email } })
   if (existing) {
-    throw new ServiceError('An account with that email already exists. Please sign in.', 'CONFLICT')
+    throw new ServiceError(DUPLICATE_EMAIL_MESSAGE, 'CONFLICT')
   }
 
   const passwordHash = await bcrypt.hash(input.password, 10)
 
-  return prisma.$transaction(async (tx) => {
-    const user = await tx.user.create({
-      data: {
-        orgId,
-        email: input.email,
-        passwordHash,
-        fullName: input.fullName,
-        role: 'BUYER'
-      }
-    })
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          orgId,
+          email: input.email,
+          passwordHash,
+          fullName: input.fullName,
+          role: 'BUYER'
+        }
+      })
 
-    const buyer = await tx.buyer.create({
-      data: {
-        orgId,
-        userId: user.id,
-        fullName: input.fullName,
-        phone: input.phone,
-        email: input.email,
-        address: input.address ?? null
-      }
-    })
+      const buyer = await tx.buyer.create({
+        data: {
+          orgId,
+          userId: user.id,
+          fullName: input.fullName,
+          phone: input.phone,
+          email: input.email,
+          address: input.address ?? null
+        }
+      })
 
-    return { buyerId: buyer.id, userId: user.id }
-  })
+      return { buyerId: buyer.id, userId: user.id }
+    })
+  } catch (error) {
+    // The loser of a concurrent double-registration lands here: the
+    // pre-check above passed for both, but only one `tx.user.create` can
+    // win the unique-email constraint. Convert that race loss into the same
+    // friendly conflict the pre-check reports, rather than letting a raw
+    // Prisma error escape. Confirm the violated constraint actually
+    // involves `email` before claiming a duplicate-email conflict — a
+    // P2002 on some other constraint must not be mislabelled.
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      constraintTargetIncludes(error.meta?.target, 'email')
+    ) {
+      throw new ServiceError(DUPLICATE_EMAIL_MESSAGE, 'CONFLICT')
+    }
+    throw error
+  }
 }
 
 export async function createSale(
@@ -144,6 +169,15 @@ export async function createSale(
     signedAt: Date
   }
 ) {
+  // ADMIN and AGENT act on behalf of any buyer in their organisation — that
+  // is their job. A BUYER may only ever create a sale for themselves; every
+  // other combination is refused before any lookup runs, so the response
+  // cannot be used to probe whether some other buyerId exists in the org.
+  assertRole(actor, ['ADMIN', 'AGENT', 'BUYER'])
+  if (actor.role === 'BUYER' && input.buyerId !== actor.buyerId) {
+    throw new ServiceError('You do not have access to this resource.', 'FORBIDDEN')
+  }
+
   const unit = await prisma.unit.findFirst({
     where: { id: input.unitId, project: { orgId: actor.orgId } },
     include: { project: { select: { id: true, currency: true } } }

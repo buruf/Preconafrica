@@ -139,7 +139,7 @@ export async function updateUnit(
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === 'P2002' &&
-      violatesNameConstraint(error.meta?.target)
+      constraintTargetIncludes(error.meta?.target, 'name')
     ) {
       throw new ServiceError(`Another unit in this project is already named "${patch.name}"`, 'CONFLICT')
     }
@@ -148,16 +148,18 @@ export async function updateUnit(
 }
 
 /**
- * `error.meta.target` identifies which columns the unique constraint
+ * `error.meta.target` identifies which columns a violated unique constraint
  * covers. On Postgres it's usually a string[] of column names, but Prisma
  * doesn't guarantee that shape across engines/versions, so this checks
  * defensively rather than assuming an array. Only a target that actually
- * involves `name` may be reported as a name conflict — otherwise a P2002 on
- * some other constraint would get mislabeled.
+ * involves `column` may be reported as that kind of conflict — otherwise a
+ * P2002 on some other constraint would get mislabeled. Shared with
+ * sales.ts's duplicate-email check on registerBuyer, so both P2002 sites
+ * agree on how a violated column is identified.
  */
-function violatesNameConstraint(target: unknown): boolean {
-  if (typeof target === 'string') return target === 'name'
-  if (Array.isArray(target)) return target.includes('name')
+export function constraintTargetIncludes(target: unknown, column: string): boolean {
+  if (typeof target === 'string') return target === column
+  if (Array.isArray(target)) return target.includes(column)
   return false
 }
 

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { BuyerRegistrationSchema, previewSchedule, summariseSale } from '@/server/services/sales'
+import { BuyerRegistrationSchema, createSale, previewSchedule, summariseSale } from '@/server/services/sales'
+import { constraintTargetIncludes } from '@/server/services/units'
+import { AuthorizationError, type SessionActor } from '@/server/session'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 
@@ -121,5 +123,77 @@ describe('summariseSale', () => {
     const summary = summariseSale(settled, utc(2026, 12, 1))
     expect(summary.nextDue).toBeNull()
     expect(summary.balanceMinor).toBe(0n)
+  })
+})
+
+describe('constraintTargetIncludes', () => {
+  // registerBuyer's P2002 handling and updateUnit's both rely on this to
+  // decide whether a unique-constraint violation is the one they think it
+  // is. Prisma's `error.meta.target` shape isn't guaranteed across
+  // engines/versions, so this must handle string, array, and other shapes
+  // defensively rather than assuming one.
+
+  it('matches a single string target', () => {
+    expect(constraintTargetIncludes('email', 'email')).toBe(true)
+    expect(constraintTargetIncludes('name', 'email')).toBe(false)
+  })
+
+  it('matches within an array target', () => {
+    expect(constraintTargetIncludes(['orgId', 'email'], 'email')).toBe(true)
+    expect(constraintTargetIncludes(['orgId', 'userId'], 'email')).toBe(false)
+  })
+
+  it('treats unrecognised shapes as no match, not a crash', () => {
+    expect(constraintTargetIncludes(undefined, 'email')).toBe(false)
+    expect(constraintTargetIncludes(null, 'email')).toBe(false)
+    expect(constraintTargetIncludes(42, 'email')).toBe(false)
+  })
+})
+
+describe('createSale authorization', () => {
+  // These paths are rejected before createSale makes its first database
+  // call (assertRole and the buyer-self check both run synchronously), so
+  // they are safe to exercise without a database. The success paths for
+  // BUYER/ADMIN/AGENT need real Unit/Buyer rows and are covered by the
+  // live-database script instead.
+
+  const buyerActor: SessionActor = {
+    userId: 'user_buyer_1',
+    orgId: 'org_1',
+    role: 'BUYER',
+    buyerId: 'buyer_1',
+    fullName: 'Amina Yusuf',
+    email: 'amina@example.com'
+  }
+
+  const baseInput = {
+    buyerId: 'buyer_1',
+    unitId: 'unit_1',
+    planType: 'FULL' as const,
+    deposit: '0',
+    termMonths: 0,
+    signedAt: utc(2026, 8, 9)
+  }
+
+  it('rejects a BUYER creating a sale for a different buyerId in the same org', async () => {
+    await expect(
+      createSale(buyerActor, { ...baseInput, buyerId: 'someone-elses-buyer-id' })
+    ).rejects.toMatchObject({ name: 'ServiceError', code: 'FORBIDDEN' })
+  })
+
+  it('does not disclose whether the other buyerId exists', async () => {
+    // Same message and code whether that buyerId is real, someone else's,
+    // or gibberish — the check never looks it up.
+    const messages = await Promise.all(
+      ['a-real-buyer-in-the-org', 'not-a-real-id-at-all'].map((buyerId) =>
+        createSale(buyerActor, { ...baseInput, buyerId }).catch((error) => error.message)
+      )
+    )
+    expect(messages[0]).toBe(messages[1])
+  })
+
+  it('rejects a role that is neither staff nor buyer', async () => {
+    const bogusActor = { ...buyerActor, role: 'SUPERUSER' } as unknown as SessionActor
+    await expect(createSale(bogusActor, baseInput)).rejects.toBeInstanceOf(AuthorizationError)
   })
 })
