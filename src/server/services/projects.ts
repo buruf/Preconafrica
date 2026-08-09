@@ -4,6 +4,7 @@ import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { isSupportedCurrency, toMinor } from '@/domain/currency'
 import { generateUnitNames, UnitPatternError } from '@/domain/units'
+import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
 
 const MAX_UNITS = 2000
 
@@ -23,7 +24,7 @@ export const CreateProjectSchema = z
     startFloor: z.coerce.number().int().min(0).max(200),
     namingPattern: z.string().min(1),
     defaultBedrooms: z.coerce.number().int().min(0).max(10),
-    defaultSizeSqm: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Invalid size'),
+    defaultSizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE),
     defaultPrice: moneyString('Price'),
     reminderDaysBefore: z.coerce.number().int().min(0).max(60),
     overdueNoticeDaysAfter: z.coerce.number().int().min(0).max(60)

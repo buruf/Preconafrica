@@ -1,9 +1,24 @@
-import type { Prisma, UnitStatus } from '@prisma/client'
+import { Prisma, type UnitStatus } from '@prisma/client'
 import { z } from 'zod'
 import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { toMinor } from '@/domain/currency'
+
+/**
+ * Shared with projects.ts's `defaultSizeSqm` — one pattern, one message, so
+ * the two schemas can never drift on what a valid size string looks like.
+ */
+export const SIZE_SQM_PATTERN = /^\d+(\.\d{1,2})?$/
+export const SIZE_SQM_MESSAGE = 'Invalid size'
+
+/**
+ * Schema-level shape check only — this cannot know which currency the unit's
+ * project uses, so it rejects obvious garbage (letters, multiple dots) but
+ * not "too many decimal places for this currency". That check needs the
+ * loaded unit and happens in updateUnit() below via toMinor().
+ */
+const PRICE_PATTERN = /^\d+(\.\d+)?$/
 
 export interface InventoryUnit {
   id: string
@@ -85,8 +100,8 @@ export async function getProjectInventory(
 export const UpdateUnitSchema = z.object({
   name: z.string().min(1).max(40).optional(),
   bedrooms: z.coerce.number().int().min(0).max(10).optional(),
-  sizeSqm: z.string().regex(/^\d+(\.\d{1,2})?$/).optional(),
-  price: z.string().optional()
+  sizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE).optional(),
+  price: z.string().regex(PRICE_PATTERN, 'Invalid amount').optional()
 })
 
 export async function updateUnit(
@@ -108,18 +123,42 @@ export async function updateUnit(
   if (patch.sizeSqm !== undefined) data.sizeSqm = patch.sizeSqm
   if (patch.price !== undefined) {
     // Repricing affects new sales only — existing Sale rows hold their own
-    // snapshot and are untouched by this.
-    data.priceMinor = toMinor(patch.price, unit.project.currency)
+    // snapshot and are untouched by this. The schema only checked numeric
+    // shape; currency-aware validation (e.g. RWF has zero decimal places)
+    // needs the project loaded above, so it happens here.
+    try {
+      data.priceMinor = toMinor(patch.price, unit.project.currency)
+    } catch (error) {
+      throw new ServiceError(error instanceof Error ? error.message : 'Invalid price', 'VALIDATION')
+    }
   }
 
   try {
     return await prisma.unit.update({ where: { id: unitId }, data })
   } catch (error) {
-    if (typeof error === 'object' && error && 'code' in error && error.code === 'P2002') {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002' &&
+      violatesNameConstraint(error.meta?.target)
+    ) {
       throw new ServiceError(`Another unit in this project is already named "${patch.name}"`, 'CONFLICT')
     }
     throw error
   }
+}
+
+/**
+ * `error.meta.target` identifies which columns the unique constraint
+ * covers. On Postgres it's usually a string[] of column names, but Prisma
+ * doesn't guarantee that shape across engines/versions, so this checks
+ * defensively rather than assuming an array. Only a target that actually
+ * involves `name` may be reported as a name conflict — otherwise a P2002 on
+ * some other constraint would get mislabeled.
+ */
+function violatesNameConstraint(target: unknown): boolean {
+  if (typeof target === 'string') return target === 'name'
+  if (Array.isArray(target)) return target.includes('name')
+  return false
 }
 
 /**
