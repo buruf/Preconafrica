@@ -96,6 +96,12 @@ async function main() {
 
     await prisma.unit.createMany({
       data: drafts.map((draft) => {
+        // Cycle of 3: indexOnFloor 1 -> 2 bedrooms, 2 -> 3 bedrooms, 3 -> 1
+        // bedroom, then repeats (4 -> 2, 5 -> 3, 6 -> 1, ...). This is the
+        // single source of truth for which unit name gets which bedroom
+        // count and therefore which price — get a unit name's bedroom count
+        // wrong here and every hand-picked payment amount for it stops
+        // lining up with the generated schedule.
         const bedrooms = (draft.indexOnFloor % 3) + 1
         return {
           projectId: project.id,
@@ -140,6 +146,7 @@ async function main() {
     projectId: string
     currency: string
     buyerId: string
+    buyerName: string
     unitName: string
     planType: PlanType
     depositMajor: string
@@ -185,7 +192,7 @@ async function main() {
         orderBy: { sequence: 'asc' }
       })
 
-      const { allocations } = allocatePayment(
+      const { allocations, overpaymentMinor } = allocatePayment(
         entries.map((e) => ({
           id: e.id,
           sequence: e.sequence,
@@ -195,7 +202,16 @@ async function main() {
         toMinor(p.amountMajor, opts.currency)
       )
 
-      const payment = await prisma.payment.create({
+      // A seed that quietly loses money is worse than one that fails loudly:
+      // if a future buyer state overpays, surface it instead of letting the
+      // surplus vanish and Payment.amountMinor drift from its allocations.
+      if (overpaymentMinor > 0n) {
+        throw new Error(
+          `Seed payment ${p.reference} for ${opts.buyerName} (sale on unit ${opts.unitName}) overpays by ${overpaymentMinor} minor units — reduce the amount or extend the schedule.`
+        )
+      }
+
+      await prisma.payment.create({
         data: {
           orgId: org.id,
           saleId: sale.id,
@@ -219,7 +235,6 @@ async function main() {
           }
         })
       }
-      void payment
     }
 
     return sale
@@ -235,7 +250,7 @@ async function main() {
   // 145,000,000 NGN, which is exactly the payment amount below. Unit '102'
   // (3 bedrooms, 250,000,000 NGN) would leave this "settled" sale half paid.
   await createSale({
-    projectId: lagos.id, currency: 'NGN', buyerId: amina.id, unitName: '101',
+    projectId: lagos.id, currency: 'NGN', buyerId: amina.id, buyerName: amina.fullName, unitName: '101',
     planType: 'FULL', depositMajor: '0', termMonths: null, signedAt: utc(2026, 3, 2),
     payments: [{ amountMajor: '145000000', receivedAt: utc(2026, 3, 2), method: 'BANK_TRANSFER', reference: 'GTB/2026/03/0021' }]
   })
@@ -245,7 +260,7 @@ async function main() {
   // monthly payment below line up with the generated schedule's installment
   // amount; '2B' is a 3-bedroom unit priced too high for that to hold.
   await createSale({
-    projectId: nairobi.id, currency: 'KES', buyerId: kwame.id, unitName: '2A',
+    projectId: nairobi.id, currency: 'KES', buyerId: kwame.id, buyerName: kwame.fullName, unitName: '2A',
     planType: 'INSTALLMENTS', depositMajor: '2000000', termMonths: 36, signedAt: utc(2026, 2, 15),
     payments: [1, 2, 3, 4, 5].map((m) => ({
       amountMajor: '255556', receivedAt: utc(2026, 2 + m, 15), method: 'MOBILE_MONEY' as PaymentMethod,
@@ -258,7 +273,7 @@ async function main() {
   // exactly settle installment 1 and the second payment land partway into
   // installment 2 — the fully-paid-then-partial cascade this fixture needs.
   await createSale({
-    projectId: lagos.id, currency: 'NGN', buyerId: zainab.id, unitName: '303',
+    projectId: lagos.id, currency: 'NGN', buyerId: zainab.id, buyerName: zainab.fullName, unitName: '303',
     planType: 'INSTALLMENTS', depositMajor: '25000000', termMonths: 36, signedAt: utc(2026, 5, 20),
     payments: [
       { amountMajor: '1666666.66', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
@@ -267,12 +282,22 @@ async function main() {
   })
 
   // 4. Several months in arrears, so the arrears report has content on day one.
+  // Unit '4C' (indexOnFloor 3 -> 1 bedroom, 7,500,000 KES) with a 1,500,000
+  // deposit finances 6,000,000 over 36 months -> a monthly installment of
+  // 166,666.66 KES (166,666 * 35, final installment 166,666.90). Against
+  // "today" (2026-08-09), installments 1-6 (due Feb-Jul 2026) are already
+  // past due; installment 7 (due 2026-08-10) is not overdue yet. Two CASH
+  // payments of 150,000 KES each (300,000 total) fully settle installment 1
+  // and land 13,333,334 minor units into installment 2, leaving installments
+  // 2 (partial) through 6 (untouched) — five overdue-and-unpaid entries as
+  // of 2026-08-09, verified against the actual schedule/allocation output
+  // rather than assumed.
   await createSale({
-    projectId: nairobi.id, currency: 'KES', buyerId: joseph.id, unitName: '4C',
+    projectId: nairobi.id, currency: 'KES', buyerId: joseph.id, buyerName: joseph.fullName, unitName: '4C',
     planType: 'INSTALLMENTS', depositMajor: '1500000', termMonths: 36, signedAt: utc(2026, 1, 10),
     payments: [
-      { amountMajor: '469445', receivedAt: utc(2026, 2, 10), method: 'CASH', reference: 'RCPT-0091' },
-      { amountMajor: '469445', receivedAt: utc(2026, 3, 12), method: 'CASH', reference: 'RCPT-0114' }
+      { amountMajor: '150000', receivedAt: utc(2026, 2, 10), method: 'CASH', reference: 'RCPT-0091' },
+      { amountMajor: '150000', receivedAt: utc(2026, 3, 12), method: 'CASH', reference: 'RCPT-0114' }
     ]
   })
 
