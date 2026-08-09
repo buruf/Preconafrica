@@ -106,8 +106,12 @@ describe('allocatePayment', () => {
   })
 
   it('does not mutate the input entries', () => {
-    const entries = threeEntries()
+    const entries = [entry(3, 300n), entry(1, 300n), entry(2, 300n)]
     allocatePayment(entries, 900n)
+
+    // Verify the array order is unchanged (would fail if entries.sort() was used instead of [...entries].sort())
+    expect(entries.map((e) => e.id)).toEqual(['e3', 'e1', 'e2'])
+    // Verify entry objects are unchanged
     expect(entries.map((e) => e.amountPaidMinor)).toEqual([0n, 0n, 0n])
   })
 })
