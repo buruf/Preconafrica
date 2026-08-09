@@ -17,6 +17,21 @@ function domainSourceFiles(): string[] {
     .map((f) => path.join(DOMAIN_DIR, f))
 }
 
+function escapeRegExp(literal: string): string {
+  return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+// Matches the module specifier immediately after any of:
+//   from '...'      from "..."
+//   require('...')  require("...")
+//   import('...')   import("...")
+// regardless of quote style, so `forbidden` entries that are only prefixes
+// (e.g. 'next/', '@/server') still match specifiers like '@/server/db'.
+function forbiddenImportPattern(forbidden: string): RegExp {
+  const escaped = escapeRegExp(forbidden)
+  return new RegExp(`(?:from\\s+|require\\(\\s*|import\\(\\s*)['"]${escaped}`)
+}
+
 describe('domain purity', () => {
   it('has domain source files to check', () => {
     expect(domainSourceFiles().length).toBeGreaterThan(0)
@@ -26,8 +41,10 @@ describe('domain purity', () => {
     for (const file of domainSourceFiles()) {
       const src = readFileSync(file, 'utf8')
       for (const forbidden of FORBIDDEN) {
-        expect(src, `${path.basename(file)} must not import ${forbidden}`)
-          .not.toContain(`from '${forbidden}`)
+        expect(
+          forbiddenImportPattern(forbidden).test(src),
+          `${path.basename(file)} must not import ${forbidden}`
+        ).toBe(false)
       }
     }
   })
