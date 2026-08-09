@@ -194,7 +194,7 @@ model ScheduleEntry {
   amountPaidMinor BigInt   @default(0)
   paidAt         DateTime?
 
-  sale          Sale                @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  sale          Sale                @relation(fields: [saleId], references: [id], onDelete: Restrict)
   allocations   PaymentAllocation[]
   notifications NotificationLog[]
   document      Document?
@@ -282,8 +282,15 @@ model NotificationLog {
   sentAt            DateTime?
   createdAt         DateTime           @default(now())
 
+  /// Cascade is safe here: NotificationLog.scheduleEntryId is required, and every
+  /// ScheduleEntry requires a Sale, whose own relation (Sale.org, above) is
+  /// Restrict — so an Organization can never be deleted while any Sale (and
+  /// therefore any NotificationLog under it) exists. Deleting an org with zero
+  /// sales also has zero NotificationLog rows to lose. See the schema-contract
+  /// guard test: Organization is deliberately NOT in its financially-sensitive
+  /// set, because this path is unreachable in practice, not because it's unchecked.
   org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Cascade)
+  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
 
   /// The idempotency guard: a retried cron run cannot double-send.
   @@unique([scheduleEntryId, templateKey, channel])
