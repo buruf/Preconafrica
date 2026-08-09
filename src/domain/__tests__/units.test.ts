@@ -112,4 +112,30 @@ describe('generateUnitNames', () => {
       ).not.toThrow()
     }
   })
+
+  it('rejects a pattern with no {floor} token across multiple floors, which would duplicate names floor to floor', () => {
+    expect(() =>
+      generateUnitNames({ floors: 3, unitsPerFloor: 4, pattern: '{index:02}', startFloor: 1 })
+    ).toThrow(UnitPatternError)
+  })
+
+  it('allows a pattern with no {floor} token on a single-floor building', () => {
+    expect(names({ floors: 1, unitsPerFloor: 4, pattern: '{index:02}', startFloor: 1 }))
+      .toEqual(['01', '02', '03', '04'])
+  })
+
+  it('rejects an unpadded {floor}{index} pattern whose digits collide across a floor/index boundary', () => {
+    // floor 1, index 11 -> "111"; floor 11, index 1 -> "111". Same name, different units.
+    expect(() =>
+      generateUnitNames({ floors: 11, unitsPerFloor: 11, pattern: '{floor}{index}', startFloor: 1 })
+    ).toThrow(UnitPatternError)
+  })
+
+  it('generates a full set of distinct names for every preset on a realistic multi-floor building', () => {
+    for (const preset of UNIT_PATTERN_PRESETS) {
+      const result = names({ floors: 12, unitsPerFloor: 8, pattern: preset.pattern, startFloor: 1 })
+      expect(result).toHaveLength(96)
+      expect(new Set(result).size).toBe(96)
+    }
+  })
 })

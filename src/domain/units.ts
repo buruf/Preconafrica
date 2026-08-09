@@ -48,7 +48,7 @@ export function columnLetters(n: number): string {
   return result
 }
 
-function assertPattern(pattern: string): void {
+function assertPattern(pattern: string, floors: number): void {
   const found: string[] = []
   for (const match of pattern.matchAll(TOKEN)) {
     const token = match[1]
@@ -63,6 +63,12 @@ function assertPattern(pattern: string): void {
   if (!found.some((token) => PER_UNIT_TOKENS.includes(token))) {
     throw new UnitPatternError(
       'Pattern must contain {index} or {letter}, otherwise every unit on a floor gets the same name.'
+    )
+  }
+
+  if (floors > 1 && !found.includes('floor')) {
+    throw new UnitPatternError(
+      `Pattern must contain {floor} when generating more than one floor (floors: ${floors}), otherwise every floor repeats the same set of names.`
     )
   }
 }
@@ -90,7 +96,7 @@ export function generateUnitNames(input: UnitNameInput): GeneratedUnit[] {
     throw new UnitPatternError('startFloor must be an integer')
   }
 
-  assertPattern(pattern)
+  assertPattern(pattern, floors)
 
   const units: GeneratedUnit[] = []
   for (let f = 0; f < floors; f++) {
@@ -99,5 +105,17 @@ export function generateUnitNames(input: UnitNameInput): GeneratedUnit[] {
       units.push({ name: expand(pattern, floor, indexOnFloor), floor, indexOnFloor })
     }
   }
+
+  const seen = new Map<string, GeneratedUnit>()
+  for (const unit of units) {
+    const clash = seen.get(unit.name)
+    if (clash) {
+      throw new UnitPatternError(
+        `Pattern "${pattern}" produced the name "${unit.name}" more than once (floor ${clash.floor} unit ${clash.indexOnFloor} and floor ${unit.floor} unit ${unit.indexOnFloor}). Add more padding or a separator so names stay distinct.`
+      )
+    }
+    seen.set(unit.name, unit)
+  }
+
   return units
 }
