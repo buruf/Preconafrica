@@ -8,9 +8,13 @@ export default async function BuyerLayout({ children }: { children: React.ReactN
   return (
     <div className="min-h-dvh">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 p-3">
-          <nav className="flex gap-3 text-sm font-medium">
-            <Link href="/dashboard">Dashboard</Link>
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-1 px-3">
+          {/* min-h-11 keeps every control in the header at the 44px tap-target
+              floor — this chrome is inherited by every buyer page. */}
+          <nav className="flex text-sm font-medium">
+            <Link href="/dashboard" className="flex min-h-11 items-center px-2">
+              Dashboard
+            </Link>
           </nav>
           <form
             action={async () => {
@@ -18,7 +22,7 @@ export default async function BuyerLayout({ children }: { children: React.ReactN
               await signOut({ redirectTo: '/login' })
             }}
           >
-            <button className="text-sm text-slate-500">
+            <button className="flex min-h-11 items-center px-2 text-sm text-slate-500">
               {actor.fullName.split(' ')[0]} · Sign out
             </button>
           </form>

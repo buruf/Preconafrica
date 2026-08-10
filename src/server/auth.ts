@@ -20,6 +20,12 @@ const DUMMY_PASSWORD_HASH = '$2a$10$d5cxiwZQX8VvbMSD4/KTau1g30eE/3dBWJj747m2FZ2a
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: 'jwt' },
   pages: { signIn: '/login' },
+  // Auth.js v5 refuses every request as UntrustedHost outside a recognised
+  // proxy. Vercel is auto-trusted via the VERCEL env var, but local
+  // `next start` and any other host would be dead without this. The host
+  // header carries no auth weight here (JWT sessions, absolute NEXTAUTH_URL),
+  // so trusting it unconditionally is safe.
+  trustHost: true,
   providers: [
     Credentials({
       credentials: { email: {}, password: {} },
