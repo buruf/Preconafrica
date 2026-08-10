@@ -1,5 +1,7 @@
+import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { getProjectInventory } from '@/server/services/units'
+import { ServiceError } from '@/server/services/errors'
 import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { UnitRow } from './UnitRow'
@@ -12,7 +14,17 @@ const TONE = {
 
 export default async function ProjectPage({ params }: { params: { id: string } }) {
   const actor = await requireStaff()
-  const { project, floors, totals } = await getProjectInventory(actor, params.id)
+
+  // A missing or cross-org project is a clean 404, not the access-denied
+  // boundary — same treatment as the staff sale page.
+  let inventory
+  try {
+    inventory = await getProjectInventory(actor, params.id)
+  } catch (error) {
+    if (error instanceof ServiceError && error.code === 'NOT_FOUND') notFound()
+    throw error
+  }
+  const { project, floors, totals } = inventory
 
   return (
     <>
