@@ -4,6 +4,7 @@ import { toMinor } from '../src/domain/currency'
 import { allocatePayment } from '../src/domain/allocation'
 import { generateSchedule } from '../src/domain/schedule'
 import { generateUnitNames } from '../src/domain/units'
+import { applyAllocations } from '../src/server/services/payments'
 
 const prisma = new PrismaClient()
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
@@ -134,13 +135,9 @@ async function main() {
 
   /**
    * Creates a sale using the real domain functions, then applies payments
-   * through the real allocation function.
-   *
-   * NOTE (temporary duplication): this hand-rolls "write allocations, then
-   * recompute amountPaidMinor and paidAt" the same way Task 13's
-   * `applyAllocations` (src/server/services/payments.ts) will. That service
-   * does not exist yet, so the seed cannot call it. Task 13 should refactor
-   * this seed to call the real service once it lands.
+   * through the real allocation function and the real `applyAllocations`
+   * service helper — the same write-then-recompute logic `recordPayment`
+   * uses, so the seed can never drift from what the service actually does.
    */
   async function createSale(opts: {
     projectId: string
@@ -211,30 +208,26 @@ async function main() {
         )
       }
 
-      await prisma.payment.create({
-        data: {
-          orgId: org.id,
-          saleId: sale.id,
-          amountMinor: toMinor(p.amountMajor, opts.currency),
-          receivedAt: p.receivedAt,
-          method: p.method,
-          reference: p.reference,
-          recordedByUserId: agent.id,
-          allocations: { create: allocations.map((a) => ({ scheduleEntryId: a.entryId, amountMinor: a.amountMinor })) }
-        }
-      })
-
-      for (const allocation of allocations) {
-        const entry = entries.find((e) => e.id === allocation.entryId)!
-        const newPaid = entry.amountPaidMinor + allocation.amountMinor
-        await prisma.scheduleEntry.update({
-          where: { id: allocation.entryId },
+      // One transaction per payment: applyAllocations requires a
+      // Prisma.TransactionClient (its contract is unconditional — it must
+      // run inside a transaction), and createSale otherwise works through
+      // the raw `prisma` client. Opening the transaction here, rather than
+      // widening the service's signature, keeps that guarantee intact.
+      await prisma.$transaction(async (tx) => {
+        const payment = await tx.payment.create({
           data: {
-            amountPaidMinor: newPaid,
-            paidAt: newPaid >= entry.amountDueMinor ? p.receivedAt : null
+            orgId: org.id,
+            saleId: sale.id,
+            amountMinor: toMinor(p.amountMajor, opts.currency),
+            receivedAt: p.receivedAt,
+            method: p.method,
+            reference: p.reference,
+            recordedByUserId: agent.id
           }
         })
-      }
+
+        await applyAllocations(tx, payment.id, allocations, p.receivedAt)
+      })
     }
 
     return sale
