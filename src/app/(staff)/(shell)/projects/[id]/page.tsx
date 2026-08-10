@@ -1,6 +1,6 @@
 import { requireStaff } from '@/server/session'
 import { getProjectInventory } from '@/server/services/units'
-import { exponentFor, formatMinor } from '@/domain/currency'
+import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { UnitRow } from './UnitRow'
 
@@ -55,10 +55,11 @@ export default async function ProjectPage({ params }: { params: { id: string } }
                     // BigInt is not serializable across the RSC boundary, so
                     // formatting happens here on the server.
                     priceLabel: formatMinor(unit.priceMinor, project.currency),
-                    // Exponent-aware: dividing by 100n would be wrong for RWF.
-                    priceInput: (
-                      unit.priceMinor / 10n ** BigInt(exponentFor(project.currency))
-                    ).toString()
+                    // Exponent-aware and lossless: plain integer division would
+                    // truncate the fractional part (₦1,000.50 -> "1000"), and
+                    // resubmitting the edit form would silently reprice the
+                    // unit. toMajorString keeps every minor-unit digit.
+                    priceInput: toMajorString(unit.priceMinor, project.currency)
                   }}
                   tone={TONE[unit.status]}
                   editable={actor.role === 'ADMIN'}

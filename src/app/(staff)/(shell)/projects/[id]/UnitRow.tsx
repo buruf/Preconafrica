@@ -70,11 +70,11 @@ export function UnitRow({
 
           <ErrorText>{error}</ErrorText>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Name" name="name" defaultValue={unit.name} />
             <Field label="Bedrooms" name="bedrooms" type="number" defaultValue={unit.bedrooms} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field label="Size (m²)" name="sizeSqm" defaultValue={unit.sizeSqm} />
             <Field label="Price" name="price" defaultValue={unit.priceInput} />
           </div>

@@ -53,6 +53,31 @@ export function toMinor(major: string, code: string): bigint {
   return sign === '-' ? -magnitude : magnitude
 }
 
+/**
+ * Renders exact minor units as the major-unit decimal string an edit form
+ * should prefill — e.g. 100050n for NGN -> "1000.50". Unlike formatMinor,
+ * this has no locale/symbol dressing and always keeps the full fractional
+ * digits (no trimming trailing zeros), so toMinor(toMajorString(x, c), c)
+ * round-trips exactly back to x. Integer division alone (amountMinor /
+ * 10n ** exponent) would silently truncate the fraction — that's the bug
+ * this function exists to avoid.
+ */
+export function toMajorString(amountMinor: bigint, code: string): string {
+  const currency = normalize(code)
+  const exponent = exponentFor(currency)
+  const negative = amountMinor < 0n
+  const magnitude = negative ? -amountMinor : amountMinor
+
+  const divisor = 10n ** BigInt(exponent)
+  const whole = magnitude / divisor
+  const fraction = magnitude % divisor
+
+  const numeric =
+    exponent === 0 ? whole.toString() : `${whole}.${fraction.toString().padStart(exponent, '0')}`
+
+  return negative ? `-${numeric}` : numeric
+}
+
 export function formatMinor(amountMinor: bigint, code: string, locale = 'en-US'): string {
   const currency = normalize(code)
   const exponent = exponentFor(currency)

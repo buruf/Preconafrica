@@ -4,6 +4,7 @@ import {
   exponentFor,
   formatMinor,
   isSupportedCurrency,
+  toMajorString,
   toMinor
 } from '@/domain/currency'
 
@@ -78,5 +79,39 @@ describe('formatMinor', () => {
 
   it('formats negative amounts', () => {
     expect(formatMinor(-125075n, 'NGN', 'en-NG')).toContain('1,250.75')
+  })
+})
+
+describe('toMajorString', () => {
+  it('keeps a nonzero remainder for a two-decimal currency', () => {
+    expect(toMajorString(100050n, 'NGN')).toBe('1000.50')
+  })
+
+  it('pads a zero remainder rather than trimming it', () => {
+    expect(toMajorString(100000n, 'NGN')).toBe('1000.00')
+  })
+
+  it('has no decimal point for a zero-decimal currency', () => {
+    expect(toMajorString(9_500_000n, 'RWF')).toBe('9500000')
+  })
+
+  it('formats negative amounts with the sign before the whole part', () => {
+    expect(toMajorString(-125075n, 'NGN')).toBe('-1250.75')
+  })
+
+  it('round-trips through toMinor for a range of values', () => {
+    const cases: Array<[bigint, string]> = [
+      [0n, 'NGN'],
+      [1n, 'NGN'],
+      [100050n, 'NGN'],
+      [25_000_000_000n, 'NGN'],
+      [1250n, 'RWF'],
+      [0n, 'RWF'],
+      [9_999_999_999_999n, 'RWF']
+    ]
+
+    for (const [amountMinor, code] of cases) {
+      expect(toMinor(toMajorString(amountMinor, code), code)).toBe(amountMinor)
+    }
   })
 })
