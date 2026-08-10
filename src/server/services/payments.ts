@@ -4,6 +4,7 @@ import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { applyAllocations, recomputeEntries } from '@/server/services/allocations'
+import { issueReceipt } from '@/server/documents/issue'
 import { allocatePayment, AllocationError } from '@/domain/allocation'
 import { toMinor } from '@/domain/currency'
 
@@ -172,9 +173,17 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
     // has to read one back.
     const settledEntryIds = await applyAllocations(tx, payment.id, allocations, receivedAt, entries)
 
+    // Issued inside this same transaction, not after it commits: a payment
+    // must never be able to exist without its receipt. This adds one
+    // sequence claim (an `Organization` UPDATE) and one `Document` INSERT to
+    // the transaction — negligible next to the allocation writes above, and
+    // nowhere near the interactive-transaction timeout, so no override is
+    // introduced here.
+    const { documentId: receiptId } = await issueReceipt(tx, actor.orgId, sale.id, payment.id)
+
     await syncSaleStatus(tx, sale.id, locked.status)
 
-    return { paymentId: payment.id, overpaymentMinor, settledEntryIds }
+    return { paymentId: payment.id, receiptId, overpaymentMinor, settledEntryIds }
   })
 }
 
