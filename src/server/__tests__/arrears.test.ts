@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildArrearsRows } from '@/server/services/arrears'
+import { arrearsReport, buildArrearsRows } from '@/server/services/arrears'
+import { AuthorizationError, type SessionActor } from '@/server/session'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 
@@ -65,5 +66,31 @@ describe('buildArrearsRows', () => {
     expect(rows[0].buyerPhone).toBe('+254712345678')
     expect(rows[0].currency).toBe('KES')
     expect(rows[0].unitName).toBe('4C')
+  })
+})
+
+describe('arrearsReport authorization', () => {
+  const actor = (role: string): SessionActor => ({
+    userId: 'u1',
+    orgId: 'o1',
+    role: role as SessionActor['role'],
+    buyerId: null,
+    fullName: 'Test User',
+    email: 'test@example.com'
+  })
+
+  // assertRole runs before the first Prisma call, so these reject without a
+  // database. Arrears carries every buyer's phone and outstanding balance —
+  // it must never be reachable by a buyer or an unrecognised role.
+  it('refuses a BUYER', async () => {
+    await expect(arrearsReport(actor('BUYER'), new Date())).rejects.toBeInstanceOf(
+      AuthorizationError
+    )
+  })
+
+  it('refuses a role outside the enum', async () => {
+    await expect(arrearsReport(actor('SUPERUSER'), new Date())).rejects.toBeInstanceOf(
+      AuthorizationError
+    )
   })
 })
