@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BuyerRegistrationSchema, createSale, previewSchedule, summariseSale } from '@/server/services/sales'
+import { BuyerRegistrationSchema, PlanSelectionSchema, createSale, previewSchedule, summariseSale } from '@/server/services/sales'
 import { constraintTargetIncludes } from '@/server/services/units'
 import { AuthorizationError, type SessionActor } from '@/server/session'
 
@@ -195,5 +195,49 @@ describe('createSale authorization', () => {
   it('rejects a role that is neither staff nor buyer', async () => {
     const bogusActor = { ...buyerActor, role: 'SUPERUSER' } as unknown as SessionActor
     await expect(createSale(bogusActor, baseInput)).rejects.toBeInstanceOf(AuthorizationError)
+  })
+})
+
+describe('PlanSelectionSchema normalisation', () => {
+  it('treats a blank deposit as zero and a blank term as the default', () => {
+    const parsed = PlanSelectionSchema.parse({
+      unitId: 'u1',
+      planType: 'INSTALLMENTS',
+      deposit: '',
+      termMonths: ''
+    })
+    expect(parsed.deposit).toBe('0')
+    expect(parsed.termMonths).toBe(36)
+  })
+
+  it('trims a padded deposit', () => {
+    const parsed = PlanSelectionSchema.parse({
+      unitId: 'u1',
+      planType: 'INSTALLMENTS',
+      deposit: ' 5000000 ',
+      termMonths: '24'
+    })
+    expect(parsed.deposit).toBe('5000000')
+    expect(parsed.termMonths).toBe(24)
+  })
+
+  it('forces deposit to zero for a FULL plan regardless of input', () => {
+    const parsed = PlanSelectionSchema.parse({
+      unitId: 'u1',
+      planType: 'FULL',
+      deposit: '999'
+    })
+    expect(parsed.deposit).toBe('0')
+  })
+
+  it('still rejects a genuinely invalid term', () => {
+    expect(
+      PlanSelectionSchema.safeParse({
+        unitId: 'u1',
+        planType: 'INSTALLMENTS',
+        deposit: '0',
+        termMonths: '0'
+      }).success
+    ).toBe(false)
   })
 })

@@ -42,8 +42,18 @@ export const PlanSelectionSchema = z
   .object({
     unitId: z.string().min(1),
     planType: z.enum(['FULL', 'INSTALLMENTS']),
-    deposit: z.string().default('0'),
-    termMonths: z.coerce.number().int().min(1).max(360).default(DEFAULT_TERM_MONTHS)
+    // Blank means "no deposit" — the buy form's deposit field is optional and
+    // an empty submission must read as zero, not fail toMinor downstream.
+    deposit: z
+      .string()
+      .default('0')
+      .transform((value) => (value.trim() === '' ? '0' : value.trim())),
+    // An empty termMonths input submits '' — z.coerce would turn that into 0
+    // and fail min(1), so map empty to undefined first and let the default apply.
+    termMonths: z.preprocess(
+      (value) => (value === '' || value === null ? undefined : value),
+      z.coerce.number().int().min(1).max(360).default(DEFAULT_TERM_MONTHS)
+    )
   })
   .transform((value) => (value.planType === 'FULL' ? { ...value, deposit: '0' } : value))
 
