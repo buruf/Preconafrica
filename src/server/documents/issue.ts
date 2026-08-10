@@ -41,10 +41,28 @@ async function createDocument(
  * that loss into the same success the winner got: re-read the document the
  * winner just created and return it, rather than letting the race surface
  * as a 500 to a buyer who simply tapped twice.
+ *
+ * Scoping: staff act for the whole organisation, but a BUYER may only ever
+ * touch their own sale. Org scoping alone is not enough for them — every buyer
+ * in an org shares that orgId, so a guessed scheduleEntryId would let one buyer
+ * mint (and then, via /api/documents/[id], read) an invoice belonging to
+ * someone else's contract. The extra `sale.buyerId` predicate makes another
+ * buyer's installment come back NOT_FOUND, the same answer a nonexistent id
+ * gets, so the response cannot be used to probe what exists.
  */
 export async function issueInvoice(actor: SessionActor, scheduleEntryId: string) {
+  // undefined for staff, which Prisma reads as "no constraint on buyerId" —
+  // the narrowing applies only to the role it is about. A BUYER session
+  // without a buyerId cannot happen (requireBuyer refuses it) but is refused
+  // here too rather than quietly widening back to org scope.
+  let buyerId: string | undefined
+  if (actor.role === 'BUYER') {
+    if (!actor.buyerId) throw new ServiceError('You do not have access to this resource.', 'FORBIDDEN')
+    buyerId = actor.buyerId
+  }
+
   const entry = await prisma.scheduleEntry.findFirst({
-    where: { id: scheduleEntryId, sale: { orgId: actor.orgId } },
+    where: { id: scheduleEntryId, sale: { orgId: actor.orgId, buyerId } },
     include: { sale: { select: { id: true } }, document: true }
   })
   if (!entry) throw new ServiceError('Installment not found', 'NOT_FOUND')

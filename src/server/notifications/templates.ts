@@ -62,7 +62,9 @@ export function renderTemplate(key: TemplateKey, data: TemplateData) {
     `Amount: ${amount}`,
     `Due date: ${due}`,
     '',
-    `View or download the invoice: ${data.documentUrl}`,
+    // `documentUrl` is the buyer's dashboard, not a PDF: the link text says
+    // what it actually opens rather than promising a document it never had.
+    `View your payment schedule: ${data.documentUrl}`,
     '',
     data.orgName
   ].join('\n')
@@ -87,7 +89,7 @@ export function renderTemplate(key: TemplateKey, data: TemplateData) {
 <tr><td style="color:#64748b">Amount</td><td><strong>${amount}</strong></td></tr>
 <tr><td style="color:#64748b">Due date</td><td>${due}</td></tr>
 </table>
-<p><a href="${documentUrlHtml}">View or download the invoice</a></p>
+<p><a href="${documentUrlHtml}">View your payment schedule</a></p>
 <p style="color:#64748b">${orgNameHtml}</p>
 </body></html>`
 

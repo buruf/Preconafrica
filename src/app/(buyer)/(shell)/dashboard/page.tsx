@@ -5,6 +5,7 @@ import { deriveStatus } from '@/domain/status'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { StatusBadge } from '@/components/StatusBadge'
+import { InvoiceControl } from './InvoiceControl'
 
 const date = (d: Date) => d.toISOString().slice(0, 10)
 
@@ -27,6 +28,15 @@ export default async function BuyerDashboard() {
   const summary = summariseSale(sale, asOf)
   const money = (amount: bigint) => formatMinor(amount, sale.currency)
   const statement = sale.documents.find((d) => d.type === 'STATEMENT')
+
+  // `documents` is the sale's flat list, not a per-entry relation, so build the
+  // lookup once instead of scanning it for every schedule row — same approach
+  // as the staff sale page.
+  const invoiceByEntryId = new Map(
+    sale.documents
+      .filter((doc) => doc.type === 'INVOICE' && doc.scheduleEntryId)
+      .map((doc) => [doc.scheduleEntryId as string, doc.id])
+  )
 
   return (
     <>
@@ -77,8 +87,8 @@ export default async function BuyerDashboard() {
       <Card className="p-0">
         <ul className="divide-y divide-slate-100">
           {sale.scheduleEntries.map((entry) => (
-            <li key={entry.id} className="flex items-center justify-between gap-3 p-3">
-              <div>
+            <li key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
+              <div className="min-w-0">
                 <p className="text-sm font-medium">
                   {entry.sequence}. {date(entry.dueDate)}
                 </p>
@@ -86,7 +96,13 @@ export default async function BuyerDashboard() {
                   {money(entry.amountPaidMinor)} of {money(entry.amountDueMinor)} paid
                 </p>
               </div>
-              <StatusBadge status={deriveStatus(entry, asOf)} />
+              <div className="flex items-center gap-3">
+                <StatusBadge status={deriveStatus(entry, asOf)} />
+                <InvoiceControl
+                  scheduleEntryId={entry.id}
+                  documentId={invoiceByEntryId.get(entry.id) ?? null}
+                />
+              </div>
             </li>
           ))}
         </ul>

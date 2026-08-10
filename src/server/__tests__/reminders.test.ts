@@ -35,9 +35,28 @@ describe('planReminders', () => {
     expect(jobs[0].destination).toBe('amina@buyer.test')
   })
 
-  it('schedules nothing on other days before the due date', () => {
-    expect(planReminders([sale([['e1', utc(2026, 8, 15), 300n, 0n]])], asOf)).toEqual([])
+  // The windows are inclusive, not exact-day: a cron run that never happened
+  // must not silently lose that day's reminders for good. NotificationLog's
+  // unique index is what keeps the wider window from re-sending.
+  it('schedules a due-soon notice anywhere inside the window', () => {
+    // Offsets 6, 1 and 0 — every one of them missed by an equality test.
+    for (const due of [utc(2026, 8, 15), utc(2026, 8, 10), utc(2026, 8, 9)]) {
+      const jobs = planReminders([sale([['e1', due, 300n, 0n]])], asOf)
+      expect(jobs, `due ${due.toISOString().slice(0, 10)} is inside the window`).toHaveLength(1)
+      expect(jobs[0].templateKey).toBe('DUE_SOON')
+    }
+  })
+
+  it('schedules nothing past the far edge of the due-soon window', () => {
+    // Offset 8 against reminderDaysBefore 7 — one day too early to notify.
     expect(planReminders([sale([['e1', utc(2026, 8, 17), 300n, 0n]])], asOf)).toEqual([])
+  })
+
+  it('schedules nothing in the gap between due and the overdue threshold', () => {
+    // Past due but not yet 3 days late: offset -1, then -2, the day before the
+    // overdue notice becomes due. The gap between the two windows stays empty.
+    expect(planReminders([sale([['e1', utc(2026, 8, 8), 300n, 0n]])], asOf)).toEqual([])
+    expect(planReminders([sale([['e1', utc(2026, 8, 7), 300n, 0n]])], asOf)).toEqual([])
   })
 
   it('schedules an overdue notice exactly N days after the due date', () => {
@@ -45,6 +64,27 @@ describe('planReminders', () => {
     expect(jobs).toHaveLength(1)
     expect(jobs[0].templateKey).toBe('OVERDUE')
     expect(jobs[0].daysLate).toBe(3)
+  })
+
+  it('still schedules an overdue notice long past the threshold', () => {
+    // 40 days late — an equality test stopped seeing this entry on day 4.
+    const jobs = planReminders([sale([['e1', utc(2026, 6, 30), 300n, 0n]])], asOf)
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0].templateKey).toBe('OVERDUE')
+    expect(jobs[0].daysLate).toBe(40)
+  })
+
+  it('plans the reminder a missed cron day should have sent', () => {
+    // The sweep should have run on 2026-08-09 (offset 7, exactly day N) and
+    // did not. The next day's run must still plan it, one day closer to due.
+    const entry = sale([['e1', utc(2026, 8, 16), 300n, 0n]])
+    expect(planReminders([entry], utc(2026, 8, 9))).toHaveLength(1)
+
+    const nextDay = planReminders([entry], utc(2026, 8, 10))
+    expect(nextDay).toHaveLength(1)
+    expect(nextDay[0].templateKey).toBe('DUE_SOON')
+    expect(nextDay[0].scheduleEntryId).toBe('e1')
+    expect(nextDay[0].daysUntilDue).toBe(6)
   })
 
   it('respects a per-project reminder window', () => {

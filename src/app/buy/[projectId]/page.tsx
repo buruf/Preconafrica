@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { notFound } from 'next/navigation'
+import { notFound, redirect } from 'next/navigation'
 import { auth } from '@/server/auth'
 import { prisma } from '@/server/db'
 import { getSaleForBuyer, DEFAULT_TERM_MONTHS } from '@/server/services/sales'
@@ -32,7 +32,15 @@ export default async function BuyPage({ params }: { params: { projectId: string 
   })
 
   const session = await auth()
-  const isSignedInBuyer = session?.user?.role === 'BUYER'
+
+  // Staff have no business in the buyer registration flow, and leaving them in
+  // it was actively destructive: submitting this form registers a brand new
+  // buyer and signs the browser into that account, silently replacing the
+  // admin's or agent's own session. Staff create sales from the staff side.
+  const role = session?.user?.role
+  if (role === 'ADMIN' || role === 'AGENT') redirect('/projects')
+
+  const isSignedInBuyer = role === 'BUYER'
 
   let existingSaleId: string | null = null
   if (isSignedInBuyer && session?.user?.buyerId) {

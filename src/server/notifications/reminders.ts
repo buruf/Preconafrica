@@ -54,9 +54,23 @@ export function planReminders(sales: ReminderSale[], asOf: Date): ReminderJob[] 
 
       const offset = differenceInDaysUtc(entry.dueDate, asOf)
 
+      // Windows, not exact days — deliberately self-healing.
+      //
+      // An `offset === reminderDaysBefore` test means the notice exists only on
+      // one calendar day: if the cron does not run that day (a platform
+      // incident, a paused project, a deploy window, a clock that lands either
+      // side of midnight), that reminder is lost forever and the buyer simply
+      // never hears from us. Matching the whole window instead means the next
+      // successful run picks up what the missed one should have sent.
+      //
+      // This cannot turn into repeat nagging: NotificationLog's
+      // `@@unique([scheduleEntryId, templateKey, channel])` allows at most one
+      // send per entry, template and channel for all time, so every run after
+      // the first is a SKIPPED no-op. The window widens which day a reminder
+      // may go out, never how many go out.
       let templateKey: TemplateKey | null = null
-      if (offset === sale.project.reminderDaysBefore) templateKey = 'DUE_SOON'
-      else if (-offset === sale.project.overdueNoticeDaysAfter) templateKey = 'OVERDUE'
+      if (offset >= 0 && offset <= sale.project.reminderDaysBefore) templateKey = 'DUE_SOON'
+      else if (-offset >= sale.project.overdueNoticeDaysAfter) templateKey = 'OVERDUE'
       if (!templateKey) continue
 
       for (const channel of sale.project.reminderChannels) {
@@ -126,43 +140,60 @@ export async function runReminderSweep(asOf: Date) {
   const orgNameById = new Map(orgs.map((org) => [org.id, org.name]))
 
   for (const job of jobs) {
-    // SMS has no registered sender yet; skip rather than fail the sweep.
-    if (job.channel === 'SMS') {
-      tally.skipped += 1
-      continue
-    }
-
-    const orgName = orgNameById.get(job.orgId)
-    if (orgName === undefined) {
-      // Should be unreachable: every job's orgId came from a sale that was
-      // just queried, and every sale has a required org. Fail loudly rather
-      // than send an email with a blank org name.
-      throw new Error(`No organization found for orgId ${job.orgId}`)
-    }
-
-    const outcome = await dispatchReminder({
-      orgId: job.orgId,
-      scheduleEntryId: job.scheduleEntryId,
-      channel: job.channel,
-      templateKey: job.templateKey,
-      destination: job.destination,
-      data: {
-        buyerName: job.buyerName,
-        orgName,
-        projectName: job.projectName,
-        unitName: job.unitName,
-        currency: job.currency,
-        amountMinor: job.amountMinor,
-        dueDate: job.dueDate,
-        daysUntilDue: job.daysUntilDue,
-        daysLate: job.daysLate,
-        documentUrl: `${baseUrl}/dashboard`
+    // One job must never be able to abort the sweep. dispatchReminder already
+    // resolves rather than throws for its own failure modes, but everything
+    // around it can still throw — an unexpected Prisma error, a template that
+    // trips over some unforeseen input, a lost connection mid-loop. Without
+    // this, the first such job would strand every job after it in the queue,
+    // and (because nothing was logged for them) the widened windows above are
+    // what eventually gets them sent instead. Failures are counted and logged,
+    // never swallowed silently.
+    try {
+      // SMS has no registered sender yet; skip rather than fail the sweep.
+      if (job.channel === 'SMS') {
+        tally.skipped += 1
+        continue
       }
-    })
 
-    if (outcome === 'SENT') tally.sent += 1
-    else if (outcome === 'SKIPPED') tally.skipped += 1
-    else tally.failed += 1
+      const orgName = orgNameById.get(job.orgId)
+      if (orgName === undefined) {
+        // Should be unreachable: every job's orgId came from a sale that was
+        // just queried, and every sale has a required org. Fail loudly rather
+        // than send an email with a blank org name — loudly now meaning this
+        // one job is recorded as failed, not that the sweep dies.
+        throw new Error(`No organization found for orgId ${job.orgId}`)
+      }
+
+      const outcome = await dispatchReminder({
+        orgId: job.orgId,
+        scheduleEntryId: job.scheduleEntryId,
+        channel: job.channel,
+        templateKey: job.templateKey,
+        destination: job.destination,
+        data: {
+          buyerName: job.buyerName,
+          orgName,
+          projectName: job.projectName,
+          unitName: job.unitName,
+          currency: job.currency,
+          amountMinor: job.amountMinor,
+          dueDate: job.dueDate,
+          daysUntilDue: job.daysUntilDue,
+          daysLate: job.daysLate,
+          documentUrl: `${baseUrl}/dashboard`
+        }
+      })
+
+      if (outcome === 'SENT') tally.sent += 1
+      else if (outcome === 'SKIPPED') tally.skipped += 1
+      else tally.failed += 1
+    } catch (error) {
+      console.error(
+        `Reminder sweep: job for schedule entry ${job.scheduleEntryId} (${job.templateKey}/${job.channel}) failed`,
+        error
+      )
+      tally.failed += 1
+    }
   }
 
   return tally
