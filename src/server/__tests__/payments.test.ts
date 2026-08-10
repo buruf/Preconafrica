@@ -44,4 +44,33 @@ describe('RecordPaymentSchema', () => {
   it('rejects an invalid date', () => {
     expect(RecordPaymentSchema.safeParse({ ...valid, receivedAt: 'yesterday' }).success).toBe(false)
   })
+
+  it('accepts any number of decimal places, because the schema cannot know the currency', () => {
+    // Shape only. RWF/UGX/XOF/XAF/DJF allow zero decimals and NGN allows two,
+    // and which applies depends on the sale being paid — so "100.5" is a
+    // question for recordPayment (via toMinor), not for this regex. Hardcoding
+    // \d{1,2} here turned a zero-decimal mistake into an uncaught 500.
+    for (const amount of ['100', '100.5', '100.50', '100.500']) {
+      expect(RecordPaymentSchema.safeParse({ ...valid, amount }).success, amount).toBe(true)
+    }
+  })
+
+  it('still rejects malformed numbers', () => {
+    for (const amount of ['', '.5', '1.', '1.2.3', '1,000', '1e3', ' 100']) {
+      expect(RecordPaymentSchema.safeParse({ ...valid, amount }).success, amount).toBe(false)
+    }
+  })
+
+  it('rejects an amount that is only zeros, at any precision', () => {
+    for (const amount of ['0', '0.0', '000', '0.000']) {
+      expect(RecordPaymentSchema.safeParse({ ...valid, amount }).success, amount).toBe(false)
+    }
+    expect(RecordPaymentSchema.safeParse({ ...valid, amount: '0.001' }).success).toBe(true)
+  })
+
+  it('accepts an amount too large for a float to hold exactly', () => {
+    // 250,000,000.10 NGN is a real unit price in the seed data. Number() would
+    // round it; the schema must not be the thing that loses the kobo.
+    expect(RecordPaymentSchema.safeParse({ ...valid, amount: '9007199254740993.01' }).success).toBe(true)
+  })
 })

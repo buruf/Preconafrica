@@ -1,15 +1,33 @@
-import type { Prisma } from '@prisma/client'
+import type { Prisma, SaleStatus } from '@prisma/client'
 import { z } from 'zod'
 import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
-import { allocatePayment, type Allocation } from '@/domain/allocation'
+import { applyAllocations, recomputeEntries } from '@/server/services/allocations'
+import { allocatePayment, AllocationError } from '@/domain/allocation'
 import { toMinor } from '@/domain/currency'
+
+/**
+ * Schema-level shape check only — this cannot know which currency the sale is
+ * denominated in, so it rejects obvious garbage (letters, multiple dots) but
+ * not "too many decimal places for this currency". Hardcoding two decimals
+ * here would be wrong for RWF, UGX, XOF, XAF and DJF, which have none. That
+ * check needs the loaded sale and happens in recordPayment() below via
+ * toMinor(), exactly as units.ts does for unit prices.
+ */
+const AMOUNT_PATTERN = /^\d+(\.\d+)?$/
+
+/**
+ * "Greater than zero" without going through `Number`: a string of digits is
+ * positive if and only if at least one of them is not a zero. Number() would
+ * silently round a large NGN amount, and this codebase keeps money exact.
+ */
+const HAS_NONZERO_DIGIT = /[1-9]/
 
 export const RecordPaymentSchema = z.object({
   saleId: z.string().min(1),
-  amount: z.string().regex(/^\d+(\.\d{1,2})?$/, 'Enter a valid amount').refine(
-    (v) => Number(v) > 0,
+  amount: z.string().regex(AMOUNT_PATTERN, 'Enter a valid amount').refine(
+    (v) => HAS_NONZERO_DIGIT.test(v),
     'Amount must be greater than zero'
   ),
   receivedAt: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid date'),
@@ -21,56 +39,64 @@ export const RecordPaymentSchema = z.object({
 export type RecordPaymentInput = z.infer<typeof RecordPaymentSchema>
 
 /**
- * Writes allocations and recomputes each touched entry's amountPaidMinor from
- * its allocation rows — recomputed, not incremented, so a retry or a concurrent
- * write cannot leave the cached total disagreeing with the audit trail.
+ * Serialises everything that rewrites a sale's balances against that one sale.
  *
- * Exported for reuse by prisma/seed.ts, which needs the exact same
- * write-then-recompute logic and previously hand-rolled a copy of it. The
- * parameter stays `Prisma.TransactionClient` only — never widened to accept
- * the plain client — so this function's contract is unconditionally
- * "runs inside a transaction". The seed satisfies that by opening its own
- * `prisma.$transaction` around each call rather than this service loosening
- * its guarantee to suit a caller that doesn't itself need one.
+ * Without this, two agents recording payments on the same sale both read the
+ * schedule before either writes, both allocate to the same oldest entry, and
+ * both commit. The reconciliation invariant still holds — each entry's total
+ * still equals the sum of its allocations — which is precisely why that check
+ * never caught it. What breaks is the cascade: the second payment piles onto
+ * an entry the first already covered instead of flowing forward, the returned
+ * overpayment is wrong, and every later payment on the sale then dies on
+ * `AllocationError: already over-allocated`, wedging the sale until someone
+ * repairs it by hand.
+ *
+ * A row lock on the Sale is the narrowest thing that fixes it: concurrent
+ * payments on *different* sales never contend, which is the overwhelmingly
+ * common case. It is the same instinct as units.ts's `reserveUnit`, which
+ * settles the double-sale race with a conditional `updateMany` rather than
+ * anything table-wide — except that a payment's correctness depends on rows it
+ * only reads (the schedule), so a conditional write cannot express it and an
+ * explicit lock can.
  */
-export async function applyAllocations(
+async function lockSale(tx: Prisma.TransactionClient, saleId: string): Promise<void> {
+  await tx.$queryRaw`SELECT id FROM "Sale" WHERE id = ${saleId} FOR UPDATE`
+}
+
+/**
+ * Derives the sale's status from the entries as they actually stand after a
+ * recompute, rather than assuming what a record or a void must have done.
+ *
+ * - CANCELLED is terminal here and is never overwritten. Voiding a payment on
+ *   a cancelled sale used to resurrect it to ACTIVE; a cancellation is a
+ *   business decision that a bookkeeping correction has no business undoing.
+ * - Everything else is read off the schedule: settled everywhere -> COMPLETED,
+ *   otherwise ACTIVE. That is what makes voiding a pure-overpayment payment
+ *   (zero allocations, so nothing was recomputed) leave a COMPLETED sale
+ *   COMPLETED instead of flipping it to ACTIVE while every entry is settled.
+ *
+ * Called while holding the sale's row lock, so the entries read here cannot be
+ * moved out from under the decision.
+ */
+async function syncSaleStatus(
   tx: Prisma.TransactionClient,
-  paymentId: string,
-  allocations: Allocation[],
-  receivedAt: Date
-): Promise<string[]> {
-  const settled: string[] = []
+  saleId: string,
+  currentStatus: SaleStatus
+): Promise<void> {
+  if (currentStatus === 'CANCELLED') return
 
-  for (const allocation of allocations) {
-    await tx.paymentAllocation.create({
-      data: {
-        paymentId,
-        scheduleEntryId: allocation.entryId,
-        amountMinor: allocation.amountMinor
-      }
-    })
+  const entries = await tx.scheduleEntry.findMany({
+    where: { saleId },
+    select: { amountDueMinor: true, amountPaidMinor: true }
+  })
 
-    const rows = await tx.paymentAllocation.findMany({
-      where: { scheduleEntryId: allocation.entryId, payment: { voidedAt: null } },
-      select: { amountMinor: true }
-    })
-    const total = rows.reduce((sum, row) => sum + row.amountMinor, 0n)
+  const desired: SaleStatus = entries.every((e) => e.amountPaidMinor >= e.amountDueMinor)
+    ? 'COMPLETED'
+    : 'ACTIVE'
 
-    const entry = await tx.scheduleEntry.findUniqueOrThrow({
-      where: { id: allocation.entryId },
-      select: { amountDueMinor: true }
-    })
-
-    const fullySettled = total >= entry.amountDueMinor
-    await tx.scheduleEntry.update({
-      where: { id: allocation.entryId },
-      data: { amountPaidMinor: total, paidAt: fullySettled ? receivedAt : null }
-    })
-
-    if (fullySettled) settled.push(allocation.entryId)
+  if (desired !== currentStatus) {
+    await tx.sale.update({ where: { id: saleId }, data: { status: desired } })
   }
-
-  return settled
 }
 
 export async function recordPayment(actor: SessionActor, input: RecordPaymentInput) {
@@ -82,59 +108,74 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
   })
   if (!sale) throw new ServiceError('Sale not found', 'NOT_FOUND')
 
-  const amountMinor = toMinor(input.amount, sale.currency)
+  // The schema only checked numeric shape; currency-aware validation (e.g.
+  // RWF has zero decimal places) needs the sale loaded above. Without this
+  // the agent gets an uncaught 500 instead of being told what is wrong.
+  let amountMinor: bigint
+  try {
+    amountMinor = toMinor(input.amount, sale.currency)
+  } catch (error) {
+    throw new ServiceError(error instanceof Error ? error.message : 'Invalid amount', 'VALIDATION')
+  }
+
   const receivedAt = new Date(input.receivedAt)
 
-  // A long installment schedule can cascade a single payment across dozens
-  // of entries, and applyAllocations does several sequential round trips per
-  // entry (create + findMany + findUniqueOrThrow + update). Against a remote
-  // database Prisma's 5s default interactive-transaction timeout is not
-  // enough headroom for that — paying off a whole outstanding balance in one
-  // payment is ordinary behaviour, not an edge case, and it must not fail
-  // with a transaction timeout. maxWait is the time allowed to *acquire* the
-  // transaction slot; timeout is the time the transaction body itself may run.
-  return prisma.$transaction(
-    async (tx) => {
-      const entries = await tx.scheduleEntry.findMany({
-        where: { saleId: sale.id },
-        orderBy: { sequence: 'asc' },
-        select: { id: true, sequence: true, amountDueMinor: true, amountPaidMinor: true }
-      })
+  return prisma.$transaction(async (tx) => {
+    // Before reading the schedule, not after: the read is what the second
+    // writer would otherwise base a stale allocation on.
+    await lockSale(tx, sale.id)
 
-      const { allocations, overpaymentMinor } = allocatePayment(entries, amountMinor)
+    // Status is re-read inside the lock. The findFirst above is only an
+    // existence/org check; by the time the lock is held it could be stale.
+    const locked = await tx.sale.findUniqueOrThrow({
+      where: { id: sale.id },
+      select: { status: true }
+    })
+    if (locked.status === 'CANCELLED') {
+      // CONFLICT, not VALIDATION: the input is perfectly well-formed and the
+      // actor is authorized. What is wrong is the state of the sale, and the
+      // caller fixes it by reinstating the sale, not by editing the form.
+      throw new ServiceError('That sale is cancelled — no payment can be recorded against it', 'CONFLICT')
+    }
 
-      const payment = await tx.payment.create({
-        data: {
-          orgId: actor.orgId,
-          saleId: sale.id,
-          amountMinor,
-          receivedAt,
-          method: input.method,
-          reference: input.reference || null,
-          note: input.note || null,
-          recordedByUserId: actor.userId
-        }
-      })
+    const entries = await tx.scheduleEntry.findMany({
+      where: { saleId: sale.id },
+      orderBy: { sequence: 'asc' },
+      select: { id: true, sequence: true, amountDueMinor: true, amountPaidMinor: true }
+    })
 
-      const settledEntryIds = await applyAllocations(tx, payment.id, allocations, receivedAt)
+    let allocations
+    let overpaymentMinor: bigint
+    try {
+      ;({ allocations, overpaymentMinor } = allocatePayment(entries, amountMinor))
+    } catch (error) {
+      // AllocationError is a domain error about this request's money, not a
+      // bug — surface it as a validation failure rather than a raw 500.
+      if (error instanceof AllocationError) throw new ServiceError(error.message, 'VALIDATION')
+      throw error
+    }
 
-      // Close the sale once nothing is outstanding. Fetched and compared in
-      // JS rather than via a Prisma field-to-field reference —
-      // `tx.scheduleEntry.fields` is unreliable on a transaction client, and
-      // a schedule is at most a few hundred rows, so re-fetching here is
-      // cheap and correct.
-      const afterEntries = await tx.scheduleEntry.findMany({
-        where: { saleId: sale.id },
-        select: { amountDueMinor: true, amountPaidMinor: true }
-      })
-      if (afterEntries.every((e) => e.amountPaidMinor >= e.amountDueMinor)) {
-        await tx.sale.update({ where: { id: sale.id }, data: { status: 'COMPLETED' } })
+    const payment = await tx.payment.create({
+      data: {
+        orgId: actor.orgId,
+        saleId: sale.id,
+        amountMinor,
+        receivedAt,
+        method: input.method,
+        reference: input.reference || null,
+        note: input.note || null,
+        recordedByUserId: actor.userId
       }
+    })
 
-      return { paymentId: payment.id, overpaymentMinor, settledEntryIds }
-    },
-    { maxWait: 10_000, timeout: 30_000 }
-  )
+    // `entries` carries every due amount applyAllocations needs, so it never
+    // has to read one back.
+    const settledEntryIds = await applyAllocations(tx, payment.id, allocations, receivedAt, entries)
+
+    await syncSaleStatus(tx, sale.id, locked.status)
+
+    return { paymentId: payment.id, overpaymentMinor, settledEntryIds }
+  })
 }
 
 export async function voidPayment(actor: SessionActor, paymentId: string, reason: string) {
@@ -151,53 +192,44 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
 
   const affectedEntryIds = payment.allocations.map((a) => a.scheduleEntryId)
 
-  // Same reasoning as recordPayment's transaction: a payment that originally
-  // cascaded across many entries touches just as many on the way back out
-  // when voided, so this needs the same widened timeout rather than the
-  // 5s default.
-  await prisma.$transaction(
-    async (tx) => {
-      await tx.payment.update({
-        where: { id: paymentId },
-        data: { voidedAt: new Date(), voidedByUserId: actor.userId, voidReason: reason.trim() }
-      })
+  await prisma.$transaction(async (tx) => {
+    // Same lock as recordPayment, and for the same reason: a void and a
+    // payment racing on one sale corrupt the cascade exactly as two payments
+    // would. Both take the lock, so they queue instead of interleaving.
+    await lockSale(tx, payment.saleId)
 
-      // The payment row survives for audit; only its allocations are
-      // withdrawn. RESTRICT on PaymentAllocation -> Payment/ScheduleEntry
-      // means allocations must go before the payment could ever be deleted;
-      // here the payment itself is never deleted, only voided, so this
-      // ordering just keeps the recompute below straightforward.
-      await tx.paymentAllocation.deleteMany({ where: { paymentId } })
+    const locked = await tx.sale.findUniqueOrThrow({
+      where: { id: payment.saleId },
+      select: { status: true }
+    })
 
-      for (const entryId of affectedEntryIds) {
-        const rows = await tx.paymentAllocation.findMany({
-          where: { scheduleEntryId: entryId, payment: { voidedAt: null } },
-          select: { amountMinor: true }
-        })
-        const total = rows.reduce((sum, row) => sum + row.amountMinor, 0n)
-        const entry = await tx.scheduleEntry.findUniqueOrThrow({
-          where: { id: entryId },
-          select: { amountDueMinor: true }
-        })
+    // Re-read under the lock so a concurrent void cannot double-withdraw the
+    // same allocations.
+    const stillVoidable = await tx.payment.updateMany({
+      where: { id: paymentId, voidedAt: null },
+      data: { voidedAt: new Date(), voidedByUserId: actor.userId, voidReason: reason.trim() }
+    })
+    if (stillVoidable.count !== 1) {
+      throw new ServiceError('That payment is already void', 'CONFLICT')
+    }
 
-        await tx.scheduleEntry.update({
-          where: { id: entryId },
-          data: {
-            amountPaidMinor: total,
-            // `undefined` means "leave paidAt unchanged"; `null` means
-            // "clear it". This is intentional, not a typo: an entry that is
-            // STILL fully covered after this void (some other payment
-            // already covered it) keeps its original settlement date rather
-            // than being restamped by a void it wasn't even part of
-            // settling. Only an entry that drops below fully-paid has its
-            // paidAt cleared.
-            paidAt: total >= entry.amountDueMinor ? undefined : null
-          }
-        })
-      }
+    // The payment row survives for audit; only its allocations are
+    // withdrawn. RESTRICT on PaymentAllocation -> Payment/ScheduleEntry
+    // means allocations must go before the payment could ever be deleted;
+    // here the payment itself is never deleted, only voided, so this
+    // ordering just keeps the recompute below straightforward.
+    await tx.paymentAllocation.deleteMany({ where: { paymentId } })
 
-      await tx.sale.update({ where: { id: payment.saleId }, data: { status: 'ACTIVE' } })
-    },
-    { maxWait: 10_000, timeout: 30_000 }
-  )
+    // One batched read for the due amounts, then one batched recompute.
+    const affectedEntries = await tx.scheduleEntry.findMany({
+      where: { id: { in: affectedEntryIds } },
+      select: { id: true, amountDueMinor: true }
+    })
+
+    // `undefined` means "leave paidAt unchanged" — see recomputeEntries for
+    // why a still-covered entry keeps its original settlement date.
+    await recomputeEntries(tx, affectedEntries, undefined)
+
+    await syncSaleStatus(tx, payment.saleId, locked.status)
+  })
 }

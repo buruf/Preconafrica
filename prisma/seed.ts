@@ -4,7 +4,7 @@ import { toMinor } from '../src/domain/currency'
 import { allocatePayment } from '../src/domain/allocation'
 import { generateSchedule } from '../src/domain/schedule'
 import { generateUnitNames } from '../src/domain/units'
-import { applyAllocations } from '../src/server/services/payments'
+import { applyAllocations } from '../src/server/services/allocations'
 
 const prisma = new PrismaClient()
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
@@ -136,8 +136,10 @@ async function main() {
   /**
    * Creates a sale using the real domain functions, then applies payments
    * through the real allocation function and the real `applyAllocations`
-   * service helper — the same write-then-recompute logic `recordPayment`
-   * uses, so the seed can never drift from what the service actually does.
+   * helper — the same write-then-recompute logic `recordPayment` uses, so the
+   * seed can never drift from what the service actually does. It comes from
+   * `services/allocations`, which imports nothing but Prisma and pure domain
+   * types, so seeding never has to boot the auth stack.
    */
   async function createSale(opts: {
     projectId: string
@@ -226,7 +228,9 @@ async function main() {
           }
         })
 
-        await applyAllocations(tx, payment.id, allocations, p.receivedAt)
+        // `entries` is the schedule the allocation was computed from, so it
+        // already carries every amountDueMinor the recompute needs.
+        await applyAllocations(tx, payment.id, allocations, p.receivedAt, entries)
       })
     }
 
