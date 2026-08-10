@@ -114,6 +114,38 @@ describe('summariseSale', () => {
     expect(summariseSale(sale, utc(2026, 6, 1)).overdueCount).toBe(0)
   })
 
+  it('clamps the balance at zero rather than reporting a negative one', () => {
+    // Allocations can legitimately exceed the sale price: the deposit is not
+    // part of the schedule, so a buyer who paid a deposit and then the full
+    // scheduled total has paid more than priceMinor. A buyer must never be
+    // shown a negative balance, and nothing downstream should have to guard
+    // against one.
+    const overpaid = {
+      priceMinor: 900n,
+      depositMinor: 400n,
+      scheduleEntries: [
+        { dueDate: utc(2026, 6, 9), amountDueMinor: 300n, amountPaidMinor: 300n },
+        { dueDate: utc(2026, 7, 9), amountDueMinor: 300n, amountPaidMinor: 300n },
+        { dueDate: utc(2026, 8, 9), amountDueMinor: 300n, amountPaidMinor: 300n }
+      ]
+    }
+    const summary = summariseSale(overpaid, utc(2026, 9, 1))
+    expect(summary.paidToDateMinor).toBe(1300n)
+    expect(summary.balanceMinor).toBe(0n)
+  })
+
+  it('finds the oldest unsettled entry even when the entries arrive out of order', () => {
+    // The caller's ordering is not trusted — next-due is defined by due date,
+    // so the summary sorts before it picks.
+    const shuffled = {
+      ...sale,
+      scheduleEntries: [sale.scheduleEntries[2], sale.scheduleEntries[0], sale.scheduleEntries[1]]
+    }
+    const summary = summariseSale(shuffled, utc(2026, 7, 20))
+    expect(summary.nextDue?.dueDate.toISOString().slice(0, 10)).toBe('2026-07-09')
+    expect(summary.nextDue?.amountMinor).toBe(200n)
+  })
+
   it('reports no next due date once everything is settled', () => {
     const settled = {
       priceMinor: 300n,
