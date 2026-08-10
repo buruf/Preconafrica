@@ -32,6 +32,18 @@ export function getSender(channel: ReminderChannel): NotificationSender {
 }
 
 /**
+ * Lets a caller check whether a channel already has a sender registered
+ * before deciding whether to register its own (e.g. a real one guarded by
+ * env vars). Used by `ensureEmailSender` so a fake sender registered
+ * directly through `registerSender` — as verification scripts and tests
+ * do — makes the real Resend setup a no-op instead of throwing on missing
+ * credentials.
+ */
+export function hasSender(channel: ReminderChannel): boolean {
+  return registry.has(channel)
+}
+
+/**
  * Adding SMS later is exactly this and nothing more:
  *
  *   registerSender({

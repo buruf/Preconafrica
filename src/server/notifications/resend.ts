@@ -1,10 +1,15 @@
 import { Resend } from 'resend'
-import { registerSender } from '@/server/notifications/sender'
+import { hasSender, registerSender } from '@/server/notifications/sender'
 
 let registered = false
 
 export function ensureEmailSender(): void {
-  if (registered) return
+  // `registered` covers the normal path (this module set up the real Resend
+  // sender). `hasSender('EMAIL')` covers a fake sender registered directly
+  // via `registerSender` — verification scripts and tests do this to avoid
+  // needing a real RESEND_API_KEY — in which case there is already an EMAIL
+  // sender and requiring Resend credentials here would be pointless.
+  if (registered || hasSender('EMAIL')) return
 
   const apiKey = process.env.RESEND_API_KEY
   const from = process.env.EMAIL_FROM
