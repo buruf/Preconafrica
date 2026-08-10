@@ -6492,3 +6492,5 @@ Set in Vercel (Production and Preview): `DATABASE_URL`, `NEXTAUTH_SECRET`, `NEXT
 `npm run build` runs `prisma generate` first — Vercel caches `node_modules`, and a stale client is the usual cause of a green local build failing in CI.
 
 After the first deploy, trigger the cron path manually with the secret and confirm the tally, then confirm a second call reports the same jobs as `skipped`.
+
+Also set `DIRECT_URL` — Neon's unpooled endpoint, the same URL with `-pooler` removed from the host. It is the `directUrl` in `schema.prisma` and is what `prisma db push` and any future migration use: DDL cannot run through PgBouncer, so a deployment without it cannot apply schema changes even though ordinary application queries (which go through the pooled `DATABASE_URL`) work fine.

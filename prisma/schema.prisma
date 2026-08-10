@@ -1,0 +1,308 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  /// Pooled endpoint (PgBouncer) for application queries.
+  url       = env("DATABASE_URL")
+  /// Unpooled endpoint. DDL cannot run through PgBouncer, so Prisma uses
+  /// this one for schema pushes and migrations.
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  ADMIN
+  AGENT
+  BUYER
+}
+
+enum UnitStatus {
+  AVAILABLE
+  RESERVED
+  SOLD
+}
+
+enum PlanType {
+  FULL
+  INSTALLMENTS
+}
+
+enum SaleStatus {
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  MOBILE_MONEY
+  CASH
+  CHEQUE
+  OTHER
+}
+
+/// EMAIL and SMS both exist from day one so adding SMS delivery later
+/// requires an adapter and a config flag, never a migration.
+enum ReminderChannel {
+  EMAIL
+  SMS
+}
+
+enum DocumentType {
+  INVOICE
+  RECEIPT
+  STATEMENT
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  logoUrl     String?
+  /// Monotonic counter backing per-org document numbering.
+  documentSeq Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  users         User[]
+  projects      Project[]
+  buyers        Buyer[]
+  sales         Sale[]
+  payments      Payment[]
+  documents     Document[]
+  notifications NotificationLog[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  orgId        String
+  email        String   @unique
+  passwordHash String
+  fullName     String
+  role         UserRole
+  /// Set when the account is deactivated, and the authoritative answer to
+  /// "may this user act?". Read on every authenticated request (requireUser)
+  /// so an already-issued JWT stops working the moment an admin deactivates
+  /// the account — overwriting the password hash alone only blocks future
+  /// logins and leaves the existing session valid until it expires.
+  disabledAt   DateTime?
+  createdAt    DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  buyer Buyer?
+
+  @@index([orgId])
+}
+
+model Project {
+  id                     String            @id @default(cuid())
+  orgId                  String
+  name                   String
+  location               String
+  /// ISO-4217 code. There is no default — every project states its own.
+  currency               String
+  expectedCompletion     DateTime
+  floors                 Int
+  unitsPerFloor          Int
+  startFloor             Int               @default(1)
+  namingPattern          String
+  reminderDaysBefore     Int               @default(7)
+  overdueNoticeDaysAfter Int               @default(3)
+  reminderChannels       ReminderChannel[] @default([EMAIL])
+  createdAt              DateTime          @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  units Unit[]
+  sales Sale[]
+
+  @@index([orgId])
+}
+
+model Unit {
+  id         String     @id @default(cuid())
+  projectId  String
+  name       String
+  floor      Int
+  bedrooms   Int
+  sizeSqm    Decimal    @db.Decimal(10, 2)
+  /// Minor units. BigInt because a NGN tower unit overflows Int32.
+  priceMinor BigInt
+  status     UnitStatus @default(AVAILABLE)
+  createdAt  DateTime   @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sale    Sale?
+
+  @@unique([projectId, name])
+  @@index([projectId, floor])
+  @@index([projectId, status])
+}
+
+model Buyer {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String   @unique
+  fullName  String
+  /// Stored E.164 with country code, validated at registration.
+  phone     String
+  email     String
+  address   String?
+  smsOptIn  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sales Sale[]
+
+  @@index([orgId])
+}
+
+model Sale {
+  id              String     @id @default(cuid())
+  orgId           String
+  projectId       String
+  unitId          String     @unique
+  buyerId         String
+  planType        PlanType
+  /// Snapshot at signing. Repricing the unit must not alter a signed contract.
+  priceMinor      BigInt
+  depositMinor    BigInt     @default(0)
+  currency        String
+  termMonths      Int?
+  signedAt        DateTime
+  status          SaleStatus @default(ACTIVE)
+  createdByUserId String
+  createdAt       DateTime   @default(now())
+
+  org             Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  project         Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  unit            Unit            @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  buyer           Buyer           @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  scheduleEntries ScheduleEntry[]
+  payments        Payment[]
+  documents       Document[]
+
+  @@index([orgId, status])
+  @@index([buyerId])
+  @@index([projectId])
+}
+
+model ScheduleEntry {
+  id             String    @id @default(cuid())
+  saleId         String
+  sequence       Int
+  dueDate        DateTime
+  amountDueMinor BigInt
+  /// Maintained transactionally as the sum of this entry's allocations.
+  /// Status is NOT stored — it is derived from this plus the current date.
+  amountPaidMinor BigInt   @default(0)
+  paidAt         DateTime?
+
+  sale          Sale                @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  allocations   PaymentAllocation[]
+  notifications NotificationLog[]
+  document      Document?
+
+  @@unique([saleId, sequence])
+  @@index([dueDate])
+  @@index([saleId])
+}
+
+model Payment {
+  id               String        @id @default(cuid())
+  orgId            String
+  saleId           String
+  amountMinor      BigInt
+  receivedAt       DateTime
+  method           PaymentMethod
+  reference        String?
+  note             String?
+  recordedByUserId String
+  /// Payments are immutable by policy: a mistake is voided below, never edited.
+  /// Deletion is Restrict-protected — this row cannot be deleted while an
+  /// allocation or document references it, and no ancestor (Sale, Unit,
+  /// Organization, Project) can cascade-delete it away.
+  voidedAt         DateTime?
+  voidedByUserId   String?
+  voidReason       String?
+  createdAt        DateTime      @default(now())
+
+  org         Organization        @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  sale        Sale                @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  allocations PaymentAllocation[]
+  document    Document?
+
+  @@index([saleId, receivedAt])
+  @@index([orgId])
+}
+
+model PaymentAllocation {
+  id              String @id @default(cuid())
+  paymentId       String
+  scheduleEntryId String
+  amountMinor     BigInt
+
+  payment       Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
+
+  @@unique([paymentId, scheduleEntryId])
+  @@index([scheduleEntryId])
+}
+
+model Document {
+  id              String       @id @default(cuid())
+  orgId           String
+  saleId          String
+  type            DocumentType
+  /// Human-facing, stable, sequential per organisation, e.g. INV-000042.
+  number          String
+  sequence        Int
+  /// Set for INVOICE. Unique so an entry cannot be double-invoiced.
+  scheduleEntryId String?      @unique
+  /// Set for RECEIPT. Unique so a payment cannot yield two receipts.
+  paymentId       String?      @unique
+  createdAt       DateTime     @default(now())
+
+  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  sale          Sale           @relation(fields: [saleId], references: [id], onDelete: Restrict)
+  scheduleEntry ScheduleEntry? @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
+  payment       Payment?       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([orgId, number])
+  @@index([saleId, type])
+}
+
+model NotificationLog {
+  id                String             @id @default(cuid())
+  orgId             String
+  scheduleEntryId   String
+  channel           ReminderChannel
+  templateKey       String
+  /// Email address or E.164 number, depending on channel.
+  destination       String
+  status            NotificationStatus @default(PENDING)
+  providerMessageId String?
+  error             String?
+  sentAt            DateTime?
+  createdAt         DateTime           @default(now())
+
+  /// Cascade is safe here: NotificationLog.scheduleEntryId is required, and every
+  /// ScheduleEntry requires a Sale, whose own relation (Sale.org, above) is
+  /// Restrict — so an Organization can never be deleted while any Sale (and
+  /// therefore any NotificationLog under it) exists. Deleting an org with zero
+  /// sales also has zero NotificationLog rows to lose. See the schema-contract
+  /// guard test: Organization is deliberately NOT in its financially-sensitive
+  /// set, because this path is unreachable in practice, not because it's unchecked.
+  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scheduleEntry ScheduleEntry @relation(fields: [scheduleEntryId], references: [id], onDelete: Restrict)
+
+  /// The idempotency guard: a retried cron run cannot double-send.
+  @@unique([scheduleEntryId, templateKey, channel])
+  @@index([orgId, createdAt])
+}
