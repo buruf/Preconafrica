@@ -48,4 +48,37 @@ describe('renderTemplate', () => {
   it('produces a plain-text body for low-bandwidth clients', () => {
     expect(renderTemplate('DUE_SOON', base).text).not.toContain('<')
   })
+
+  it('entity-encodes a hostile buyer name in the html body but leaves the text body untouched', () => {
+    const hostileName = '<img src=x onerror=alert(1)>'
+    const out = renderTemplate('DUE_SOON', { ...base, buyerName: hostileName })
+
+    expect(out.html).not.toContain(hostileName)
+    expect(out.html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+
+    expect(out.text).toContain(hostileName)
+  })
+
+  it('entity-encodes hostile org, project, and unit names in the html body', () => {
+    const out = renderTemplate('DUE_SOON', {
+      ...base,
+      orgName: '<b>Sunrise</b>',
+      projectName: '<i>Heights</i>',
+      unitName: '"305"'
+    })
+
+    expect(out.html).not.toContain('<b>Sunrise</b>')
+    expect(out.html).toContain('&lt;b&gt;Sunrise&lt;/b&gt;')
+    expect(out.html).not.toContain('<i>Heights</i>')
+    expect(out.html).toContain('&lt;i&gt;Heights&lt;/i&gt;')
+    expect(out.html).toContain('&quot;305&quot;')
+  })
+
+  it('quote-escapes a hostile documentUrl before it lands in the href attribute', () => {
+    const hostileUrl = 'https://example.com/x" onmouseover="alert(1)'
+    const out = renderTemplate('DUE_SOON', { ...base, documentUrl: hostileUrl })
+
+    expect(out.html).not.toContain(`href="${hostileUrl}"`)
+    expect(out.html).toContain('href="https://example.com/x&quot; onmouseover=&quot;alert(1)"')
+  })
 })
