@@ -1,3 +1,7 @@
-export default function Home() {
-  return <main className="p-6"><h1 className="text-xl font-semibold">Preconstruction Sales</h1></main>
+import { redirect } from 'next/navigation'
+import { requireUser } from '@/server/session'
+
+export default async function Home() {
+  const actor = await requireUser()
+  redirect(actor.role === 'BUYER' ? '/dashboard' : '/projects')
 }
