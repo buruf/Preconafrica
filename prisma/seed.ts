@@ -5,6 +5,7 @@ import { allocatePayment } from '../src/domain/allocation'
 import { generateSchedule } from '../src/domain/schedule'
 import { generateUnitNames } from '../src/domain/units'
 import { applyAllocations } from '../src/server/services/allocations'
+import { formatDocumentNumber, nextDocumentSequence } from '../src/server/documents/numbering'
 
 const prisma = new PrismaClient()
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
@@ -231,8 +232,38 @@ async function main() {
         // `entries` is the schedule the allocation was computed from, so it
         // already carries every amountDueMinor the recompute needs.
         await applyAllocations(tx, payment.id, allocations, p.receivedAt, entries)
+
+        // A receipt per payment, exactly as recordPayment would issue one.
+        // documents/issue.ts pulls the auth stack, which a bare tsx process
+        // cannot boot, so the seed uses the same auth-free numbering
+        // primitives the service does.
+        const sequence = await nextDocumentSequence(tx, org.id)
+        await tx.document.create({
+          data: {
+            orgId: org.id,
+            saleId: sale.id,
+            type: 'RECEIPT',
+            number: formatDocumentNumber('RECEIPT', sequence),
+            sequence,
+            paymentId: payment.id
+          }
+        })
       })
     }
+
+    // The statement of the full schedule at signing, as the buy flow issues.
+    await prisma.$transaction(async (tx) => {
+      const sequence = await nextDocumentSequence(tx, org.id)
+      await tx.document.create({
+        data: {
+          orgId: org.id,
+          saleId: sale.id,
+          type: 'STATEMENT',
+          number: formatDocumentNumber('STATEMENT', sequence),
+          sequence
+        }
+      })
+    })
 
     return sale
   }
