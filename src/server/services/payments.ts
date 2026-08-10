@@ -60,7 +60,7 @@ export type RecordPaymentInput = z.infer<typeof RecordPaymentSchema>
  * only reads (the schedule), so a conditional write cannot express it and an
  * explicit lock can.
  */
-async function lockSale(tx: Prisma.TransactionClient, saleId: string): Promise<void> {
+export async function lockSale(tx: Prisma.TransactionClient, saleId: string): Promise<void> {
   await tx.$queryRaw`SELECT id FROM "Sale" WHERE id = ${saleId} FOR UPDATE`
 }
 

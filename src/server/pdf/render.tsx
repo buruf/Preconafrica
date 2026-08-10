@@ -101,6 +101,16 @@ export async function renderDocumentPdf(
     }
   }
 
+  if (doc.type !== 'STATEMENT') {
+    // Exhaustiveness guard: if `DocumentType` ever gains a fourth member,
+    // this is a compile-time error at the `never` assignment below (a new
+    // branch must be added above) and, should that check ever be bypassed
+    // at runtime (e.g. stale client, direct DB write), a loud failure here
+    // instead of silently rendering the wrong PDF as a Statement.
+    const exhaustive: never = doc.type
+    throw new Error(`Unsupported document type: ${exhaustive as string}`)
+  }
+
   const asOf = new Date()
   return {
     filename,
