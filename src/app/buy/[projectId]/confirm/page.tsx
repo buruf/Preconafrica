@@ -68,7 +68,9 @@ export default async function ConfirmPage({
   // database, not from anything the buyer's browser sent.
   const unit = await prisma.unit.findFirst({
     where: { id: plan.unitId, projectId: params.projectId, project: { orgId: actor.orgId } },
-    include: { project: { select: { id: true, name: true, currency: true } } }
+    include: {
+      project: { select: { id: true, name: true, currency: true, installmentMarkupBps: true } }
+    }
   })
   if (!unit) notFound()
 
@@ -92,6 +94,11 @@ export default async function ConfirmPage({
       planType: plan.planType,
       priceMinor: unit.priceMinor,
       depositMinor,
+      // The project's default charge, never a value from the query string —
+      // exactly how createSale will resolve it on Confirm, so the figures the
+      // buyer sees here are the figures that get written. Zero for a full
+      // payment, since nothing is financed.
+      markupBps: plan.planType === 'INSTALLMENTS' ? unit.project.installmentMarkupBps : 0,
       months: plan.termMonths,
       signedAt: new Date()
     })

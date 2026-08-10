@@ -159,10 +159,15 @@ async function main() {
     })
 
     const depositMinor = toMinor(opts.depositMajor, opts.currency)
+    // Compile-site fix only. The seed is rewritten in the next task, where the
+    // markup becomes something the seeded projects actually demonstrate; zero
+    // keeps today's seeded figures exactly as they were.
+    const markupBps = 0
     const drafts = generateSchedule({
       planType: opts.planType,
       priceMinor: unit.priceMinor,
       depositMinor,
+      markupBps,
       months: opts.termMonths ?? 0,
       signedAt: opts.signedAt
     })
@@ -176,6 +181,7 @@ async function main() {
         planType: opts.planType,
         priceMinor: unit.priceMinor,
         depositMinor,
+        markupBps,
         currency: opts.currency,
         termMonths: opts.termMonths,
         signedAt: opts.signedAt,
