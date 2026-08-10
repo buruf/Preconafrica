@@ -18,7 +18,11 @@ const CredentialsSchema = z.object({
 const DUMMY_PASSWORD_HASH = '$2a$10$d5cxiwZQX8VvbMSD4/KTau1g30eE/3dBWJj747m2FZ2a8JvreB1XC'
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  session: { strategy: 'jwt' },
+  // 7 days, down from Auth.js's 30-day default. A JWT carries its own claims
+  // and cannot be revoked from the outside, so its lifetime is the outer bound
+  // on how long a leaked cookie stays useful. `requireUser` closes the
+  // deactivation case per request; this bounds everything it cannot see.
+  session: { strategy: 'jwt', maxAge: 60 * 60 * 24 * 7 },
   pages: { signIn: '/login' },
   // Auth.js v5 refuses every request as UntrustedHost outside a recognised
   // proxy. Vercel is auto-trusted via the VERCEL env var, but local

@@ -86,6 +86,12 @@ model User {
   passwordHash String
   fullName     String
   role         UserRole
+  /// Set when the account is deactivated, and the authoritative answer to
+  /// "may this user act?". Read on every authenticated request (requireUser)
+  /// so an already-issued JWT stops working the moment an admin deactivates
+  /// the account — overwriting the password hash alone only blocks future
+  /// logins and leaves the existing session valid until it expires.
+  disabledAt   DateTime?
   createdAt    DateTime @default(now())
 
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)

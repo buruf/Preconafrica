@@ -64,6 +64,10 @@ export default async function ProjectPage({ params }: { params: { id: string } }
                     bedrooms: unit.bedrooms,
                     sizeSqm: unit.sizeSqm,
                     status: unit.status,
+                    // Non-null once a sale claims the unit: the row turns it
+                    // into the link that opens that sale, which is what makes
+                    // /sales/[id] reachable for a buyer who is not overdue.
+                    saleId: unit.saleId,
                     // BigInt is not serializable across the RSC boundary, so
                     // formatting happens here on the server.
                     priceLabel: formatMinor(unit.priceMinor, project.currency),

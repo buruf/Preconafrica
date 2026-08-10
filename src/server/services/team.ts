@@ -74,18 +74,21 @@ export async function listTeam(actor: SessionActor): Promise<TeamMember[]> {
   const users = await prisma.user.findMany({
     where: { orgId: actor.orgId, role: { in: ['ADMIN', 'AGENT'] } },
     orderBy: [{ role: 'asc' }, { fullName: 'asc' }],
-    select: { id: true, fullName: true, email: true, role: true, createdAt: true, passwordHash: true }
+    select: { id: true, fullName: true, email: true, role: true, createdAt: true, disabledAt: true }
   })
 
-  // The hash itself never leaves this function — only the derived boolean
-  // does, so the page can never accidentally render or leak it. The query's
-  // `role: { in: ['ADMIN', 'AGENT'] } }` filter guarantees BUYER never shows
-  // up here, but Prisma's generated type is the full UserRole enum, so the
+  // `active` is derived from `disabledAt`, which is the same field
+  // `requireUser` checks on every authenticated request — so what this list
+  // shows and what the session guard actually enforces can never disagree.
+  // The password hash is no longer selected at all, which beats selecting it
+  // and trusting the page not to render it. The query's
+  // `role: { in: ['ADMIN', 'AGENT'] }` filter guarantees BUYER never shows up
+  // here, but Prisma's generated type is the full UserRole enum, so the
   // narrower TeamMember role needs an explicit cast.
-  return users.map(({ passwordHash, role, ...user }) => ({
+  return users.map(({ disabledAt, role, ...user }) => ({
     ...user,
     role: role as 'ADMIN' | 'AGENT',
-    active: !passwordHash.startsWith('disabled:')
+    active: disabledAt === null
   }))
 }
 
@@ -98,11 +101,19 @@ export async function deactivateAgent(actor: SessionActor, userId: string) {
   })
   if (!user) throw new ServiceError('Agent not found', 'NOT_FOUND')
 
-  // Sales reference createdByUserId/recordedByUserId, so the row is kept and
-  // the login is disabled by replacing the hash with one no input can
-  // produce — bcrypt.compare against it always resolves false, never throws.
+  // Sales reference createdByUserId/recordedByUserId, so the row is kept.
+  //
+  // Two writes, one intent:
+  //   - `disabledAt` is what actually revokes access. `requireUser` reads it on
+  //     every authenticated request, so an agent holding a valid JWT is locked
+  //     out on their very next navigation rather than up to a week later when
+  //     the token expires.
+  //   - the hash overwrite stays as defence in depth: it blocks the login form
+  //     even if a future change stops consulting `disabledAt`. The replacement
+  //     is a value no input can produce, so bcrypt.compare against it always
+  //     resolves false and never throws.
   await prisma.user.update({
     where: { id: userId },
-    data: { passwordHash: `disabled:${randomUUID()}` }
+    data: { disabledAt: new Date(), passwordHash: `disabled:${randomUUID()}` }
   })
 }

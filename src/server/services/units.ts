@@ -28,6 +28,14 @@ export interface InventoryUnit {
   sizeSqm: string
   priceMinor: bigint
   status: UnitStatus
+  /**
+   * The sale that claimed this unit, or null while no sale references it.
+   * Carried so an inventory row can link straight to its sale: before this,
+   * the arrears report was the only route to /sales/[id], so staff could not
+   * open the sale of any buyer who was not overdue. `Sale.unitId` is
+   * `@unique`, so there is at most one sale per unit.
+   */
+  saleId: string | null
 }
 
 export interface ProjectInventory {
@@ -51,7 +59,14 @@ export async function getProjectInventory(
   // another organisation must come back NOT_FOUND, not leak as data.
   const project = await prisma.project.findFirst({
     where: { id: projectId, orgId: actor.orgId },
-    include: { units: { orderBy: [{ floor: 'asc' }, { name: 'asc' }] } }
+    include: {
+      units: {
+        orderBy: [{ floor: 'asc' }, { name: 'asc' }],
+        // Only the sale's id — nothing about the buyer or the money belongs in
+        // an inventory listing. It exists purely so the row can link to it.
+        include: { sale: { select: { id: true } } }
+      }
+    }
   })
   if (!project) throw new ServiceError('Project not found', 'NOT_FOUND')
 
@@ -64,7 +79,8 @@ export async function getProjectInventory(
       bedrooms: unit.bedrooms,
       sizeSqm: unit.sizeSqm.toString(),
       priceMinor: unit.priceMinor,
-      status: unit.status
+      status: unit.status,
+      saleId: unit.sale?.id ?? null
     }
     byFloor.set(unit.floor, [...(byFloor.get(unit.floor) ?? []), entry])
   }
