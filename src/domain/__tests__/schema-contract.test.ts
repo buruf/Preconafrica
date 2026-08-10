@@ -62,6 +62,20 @@ describe('schema contract', () => {
     }
   })
 
+  it('stores every basis-point field as Int', () => {
+    // The counterpart to the rule above, and the reason it does not catch these:
+    // a markup in basis points is a count of hundredths of a percent, bounded at
+    // 10000, not an amount of money. It must stay Int so it needs no BigInt
+    // ceremony to reach `BigInt(markupBps)` in the schedule math — and so a
+    // reviewer is never left wondering which fields are money and which are not.
+    const bpsFields = schema.match(/^\s*\w*[Bb]ps\s+\S+/gm) ?? []
+    expect(bpsFields.length).toBeGreaterThan(0)
+    for (const field of bpsFields) {
+      expect(field, `${field.trim()} must be Int`).toMatch(/\bInt\b/)
+      expect(field, `${field.trim()} must not be BigInt`).not.toMatch(/BigInt/)
+    }
+  })
+
   it('never stores a derived installment status', () => {
     expect(schema).not.toMatch(/model ScheduleEntry[\s\S]*?status\s+InstallmentStatus/)
   })
