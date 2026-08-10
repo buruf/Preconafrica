@@ -3,7 +3,7 @@ import { prisma } from '@/server/db'
 import { type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { formatDocumentNumber, nextDocumentSequence } from '@/server/documents/numbering'
-import { lockSale } from '@/server/services/payments'
+import { lockSale } from '@/server/services/allocations'
 import { constraintTargetIncludes } from '@/server/services/units'
 
 async function createDocument(

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
-import { applyAllocations, recomputeEntries } from '@/server/services/allocations'
+import { applyAllocations, lockSale, recomputeEntries } from '@/server/services/allocations'
 import { issueReceipt } from '@/server/documents/issue'
 import { allocatePayment, AllocationError } from '@/domain/allocation'
 import { toMinor } from '@/domain/currency'
@@ -38,31 +38,6 @@ export const RecordPaymentSchema = z.object({
 })
 
 export type RecordPaymentInput = z.infer<typeof RecordPaymentSchema>
-
-/**
- * Serialises everything that rewrites a sale's balances against that one sale.
- *
- * Without this, two agents recording payments on the same sale both read the
- * schedule before either writes, both allocate to the same oldest entry, and
- * both commit. The reconciliation invariant still holds — each entry's total
- * still equals the sum of its allocations — which is precisely why that check
- * never caught it. What breaks is the cascade: the second payment piles onto
- * an entry the first already covered instead of flowing forward, the returned
- * overpayment is wrong, and every later payment on the sale then dies on
- * `AllocationError: already over-allocated`, wedging the sale until someone
- * repairs it by hand.
- *
- * A row lock on the Sale is the narrowest thing that fixes it: concurrent
- * payments on *different* sales never contend, which is the overwhelmingly
- * common case. It is the same instinct as units.ts's `reserveUnit`, which
- * settles the double-sale race with a conditional `updateMany` rather than
- * anything table-wide — except that a payment's correctness depends on rows it
- * only reads (the schedule), so a conditional write cannot express it and an
- * explicit lock can.
- */
-export async function lockSale(tx: Prisma.TransactionClient, saleId: string): Promise<void> {
-  await tx.$queryRaw`SELECT id FROM "Sale" WHERE id = ${saleId} FOR UPDATE`
-}
 
 /**
  * Derives the sale's status from the entries as they actually stand after a
