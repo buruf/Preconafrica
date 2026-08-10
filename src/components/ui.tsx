@@ -1,5 +1,4 @@
 import type { ReactNode } from 'react'
-import { formatMinor } from '@/domain/currency'
 
 export function PageHeader({ title, subtitle, action }: { title: string; subtitle?: string; action?: ReactNode }) {
   return (
@@ -88,6 +87,3 @@ export function ErrorText({ children }: { children?: ReactNode }) {
   return <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{children}</p>
 }
 
-export function Money({ amountMinor, currency }: { amountMinor: bigint; currency: string }) {
-  return <span>{formatMinor(amountMinor, currency)}</span>
-}

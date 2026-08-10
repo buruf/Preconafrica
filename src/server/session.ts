@@ -1,8 +1,9 @@
 import { redirect } from 'next/navigation'
 import { auth } from '@/server/auth'
 // db.ts imports nothing from this module (its only import is @prisma/client),
-// so this direction cannot cycle.
+// and errors.ts imports nothing at all, so neither direction can cycle.
 import { prisma } from '@/server/db'
+import { ServiceError } from '@/server/services/errors'
 
 export type Role = 'ADMIN' | 'AGENT' | 'BUYER'
 
@@ -15,10 +16,18 @@ export interface SessionActor {
   email: string
 }
 
-export class AuthorizationError extends Error {
+/**
+ * A role failure is a ServiceError with code 'FORBIDDEN', not a separate error
+ * family. Every action already funnels `error instanceof ServiceError` into the
+ * message it shows the user; as a bare Error this fell through to each
+ * action's generic "Could not …" fallback, so the one place that knew what
+ * actually went wrong was the only place that could not say it. Subclassing
+ * keeps every existing `instanceof AuthorizationError` site working.
+ */
+export class AuthorizationError extends ServiceError {
   constructor() {
     // Deliberately vague: the message must not disclose which roles qualify.
-    super('You do not have access to this resource.')
+    super('You do not have access to this resource.', 'FORBIDDEN')
     this.name = 'AuthorizationError'
   }
 }

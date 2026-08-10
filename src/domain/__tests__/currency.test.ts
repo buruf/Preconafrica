@@ -80,6 +80,23 @@ describe('formatMinor', () => {
   it('formats negative amounts', () => {
     expect(formatMinor(-125075n, 'NGN', 'en-NG')).toContain('1,250.75')
   })
+
+  it('keeps every digit of an amount beyond Number.MAX_SAFE_INTEGER', () => {
+    // Whole part 9,007,199,254,740,993 = MAX_SAFE_INTEGER + 2, which no float
+    // can hold. Formatting used to pass through Number() and printed ...994.00
+    // — a figure that does not match what the database stores.
+    const amountMinor = 900_719_925_474_099_300n
+    expect(amountMinor).toBeGreaterThan(BigInt(Number.MAX_SAFE_INTEGER))
+
+    const out = formatMinor(amountMinor, 'NGN', 'en-US')
+    expect(out).toContain('9,007,199,254,740,993.00')
+    expect(out).not.toContain('994')
+  })
+
+  it('keeps every digit of a huge zero-decimal amount', () => {
+    const out = formatMinor(90_071_992_547_409_931n, 'UGX', 'en-US')
+    expect(out).toContain('90,071,992,547,409,931')
+  })
 })
 
 describe('toMajorString', () => {

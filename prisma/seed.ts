@@ -251,6 +251,20 @@ async function main() {
       })
     }
 
+    // Same rule recordPayment's syncSaleStatus applies once the last
+    // installment lands: a sale whose every entry is settled is COMPLETED, not
+    // ACTIVE. Read back from the entries after the payment loop rather than
+    // inferred from the fixture's intent, so this cannot drift from what the
+    // allocations actually did. Without it, Amina's fully paid demo sale read
+    // ACTIVE — a state the running app would never produce.
+    const settledEntries = await prisma.scheduleEntry.findMany({
+      where: { saleId: sale.id },
+      select: { amountDueMinor: true, amountPaidMinor: true }
+    })
+    if (settledEntries.every((entry) => entry.amountPaidMinor >= entry.amountDueMinor)) {
+      await prisma.sale.update({ where: { id: sale.id }, data: { status: 'COMPLETED' } })
+    }
+
     // The statement of the full schedule at signing, as the buy flow issues.
     await prisma.$transaction(async (tx) => {
       const sequence = await nextDocumentSequence(tx, org.id)

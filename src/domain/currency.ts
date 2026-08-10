@@ -93,10 +93,23 @@ export function formatMinor(amountMinor: bigint, code: string, locale = 'en-US')
       ? whole.toString()
       : `${whole}.${fraction.toString().padStart(exponent, '0')}`
 
+  // The decimal string goes to Intl as-is. `Number(numeric)` was the one place
+  // exact money still round-tripped through a float: an amount above
+  // Number.MAX_SAFE_INTEGER minor units (entirely reachable in NGN or UGX)
+  // came back with its low-order digits rounded, so the figure shown to a
+  // buyer could differ from the figure stored. Intl.NumberFormat accepts a
+  // numeric string and formats its digits exactly, with no 2^53 ceiling.
+  //
+  // The cast is to `Intl.StringNumericLiteral`, a template-literal type no
+  // ordinary `string` can satisfy. It is sound here because this function
+  // builds `signed` itself, digit by digit, out of BigInt division — it is
+  // always `-?\d+(\.\d+)?` and never user input.
+  const signed = (negative ? `-${numeric}` : numeric) as Intl.StringNumericLiteral
+
   return new Intl.NumberFormat(locale, {
     style: 'currency',
     currency,
     minimumFractionDigits: exponent,
     maximumFractionDigits: exponent
-  }).format(Number(negative ? `-${numeric}` : numeric))
+  }).format(signed)
 }
