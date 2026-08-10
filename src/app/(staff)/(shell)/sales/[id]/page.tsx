@@ -1,6 +1,8 @@
 import Link from 'next/link'
+import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { getSaleForStaff, summariseSale } from '@/server/services/sales'
+import { ServiceError } from '@/server/services/errors'
 import { deriveStatus } from '@/domain/status'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
@@ -20,7 +22,20 @@ const date = (d: Date) => d.toISOString().slice(0, 10)
 
 export default async function StaffSalePage({ params }: { params: { id: string } }) {
   const actor = await requireStaff()
-  const sale = await getSaleForStaff(actor, params.id)
+
+  // A missing or cross-org sale is a routing miss, not an application error —
+  // notFound() renders Next's clean not-found page instead of tripping the
+  // (staff) error boundary's "Access denied" message, which would otherwise
+  // be misleading here (the actor is authorized; the sale just is not theirs
+  // to find). Any other ServiceError (there are none from this call today,
+  // but the contract may grow one) still propagates to the error boundary.
+  let sale: Awaited<ReturnType<typeof getSaleForStaff>>
+  try {
+    sale = await getSaleForStaff(actor, params.id)
+  } catch (error) {
+    if (error instanceof ServiceError && error.code === 'NOT_FOUND') notFound()
+    throw error
+  }
 
   // One instant for the whole page — see the buyer dashboard for why every
   // deriveStatus call and the summary must agree on "now".
