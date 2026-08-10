@@ -18,6 +18,11 @@ export default async function StaffLayout({ children }: { children: React.ReactN
             <Link href="/arrears" className="flex min-h-11 items-center px-2">
               Arrears
             </Link>
+            {actor.role === 'ADMIN' ? (
+              <Link href="/team" className="flex min-h-11 items-center px-2">
+                Team
+              </Link>
+            ) : null}
           </nav>
           <form
             action={async () => {
