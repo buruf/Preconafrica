@@ -4,6 +4,7 @@ import { auth } from '@/server/auth'
 // and errors.ts imports nothing at all, so neither direction can cycle.
 import { prisma } from '@/server/db'
 import { ServiceError } from '@/server/services/errors'
+import { sessionOutdatedByPasswordChange } from '@/domain/password-reset'
 
 export type Role = 'ADMIN' | 'AGENT' | 'BUYER'
 
@@ -42,12 +43,23 @@ export function assertRole(actor: SessionActor, allowed: Role[]): void {
  *
  * A JWT session carries its claims until it expires, so nothing in the token
  * can tell us that the account behind it was deactivated (or deleted) a minute
- * ago. That is checked here against the database on every authenticated
- * request: one indexed primary-key read of a single nullable column, which is
- * a price worth paying to make "deactivate this agent" take effect on their
- * very next navigation rather than up to a week later. `Sale.createdByUserId`
- * is a plain string rather than a relation, so a user row can genuinely be
- * gone; a missing row is treated exactly like a disabled one.
+ * ago, or that its password has since been changed. Both are checked here
+ * against the database on every authenticated request: one indexed
+ * primary-key read of two nullable columns, which is a price worth paying to
+ * make "deactivate this agent" and "reset my password" take effect on the very
+ * next navigation rather than up to a week later.
+ *
+ *   - `disabledAt` revokes on deactivation. `Sale.createdByUserId` is a plain
+ *     string rather than a relation, so a user row can genuinely be gone; a
+ *     missing row is treated exactly like a disabled one.
+ *   - `passwordChangedAt` revokes on password change — reset or self-service.
+ *     This is what makes a reset actually eject whoever was already signed in
+ *     with the old password. Without it, changing the password would close the
+ *     login form and leave an intruder's existing session running for up to a
+ *     week, which is the opposite of what the person resetting intended.
+ *
+ * The second guard costs no extra round trip: it reads a column added to the
+ * query the deactivation check was already making.
  */
 export async function requireUser(): Promise<SessionActor> {
   const session = await auth()
@@ -55,9 +67,12 @@ export async function requireUser(): Promise<SessionActor> {
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { disabledAt: true }
+    select: { disabledAt: true, passwordChangedAt: true }
   })
   if (!user || user.disabledAt !== null) redirect('/login')
+  if (sessionOutdatedByPasswordChange(user.passwordChangedAt, session.user.tokenIssuedAt)) {
+    redirect('/login')
+  }
 
   return {
     userId: session.user.id,

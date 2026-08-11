@@ -73,6 +73,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.orgId = token.orgId as string
       session.user.role = token.role as 'ADMIN' | 'AGENT' | 'BUYER'
       session.user.buyerId = (token.buyerId as string | null) ?? null
+      // `iat` is stamped by Auth.js when the JWT is encoded, and is the only
+      // claim that says *when* this session started. Surfacing it is what lets
+      // `requireUser` compare it against `User.passwordChangedAt` and discard
+      // sessions that predate a password change: a JWT cannot be revoked from
+      // the outside, so it has to be out-argued from the inside. It is not
+      // secret — the token is signed, not encrypted, so its holder could
+      // already read `iat`.
+      session.user.tokenIssuedAt = token.iat
       return session
     }
   }
