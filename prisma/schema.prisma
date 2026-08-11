@@ -92,12 +92,50 @@ model User {
   /// the account — overwriting the password hash alone only blocks future
   /// logins and leaves the existing session valid until it expires.
   disabledAt   DateTime?
+  /// Stamped every time the password changes — by self-service change or by
+  /// reset. A JWT cannot be revoked from the outside, so this field is what
+  /// revokes one: `requireUser` compares it against the token's `iat` on every
+  /// authenticated request and sends anything issued at or before the change
+  /// back to /login. Without it, resetting a password a thief already used
+  /// would block them at the login form while leaving the session they already
+  /// hold valid for up to a week — the opposite of what a reset is for. Null
+  /// means the password has never changed, so no session can predate a change.
+  passwordChangedAt DateTime?
   createdAt    DateTime @default(now())
 
-  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  buyer Buyer?
+  org                 Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  buyer               Buyer?
+  passwordResetTokens PasswordResetToken[]
 
   @@index([orgId])
+}
+
+/// A single-use, one-hour credential for proving control of an account's email
+/// address. Only the sha256 of the token is stored — the raw value exists in
+/// the reset email and nowhere else, so a database leak yields nothing an
+/// attacker can present at /reset-password.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  /// sha256 hex of the raw token; the raw token is never stored.
+  tokenHash String    @unique
+  expiresAt DateTime
+  /// Set the moment the token is spent — and also when it is superseded by a
+  /// newer request or by any password change, which is what makes "at most one
+  /// live reset link per account" true rather than merely likely.
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  /// Cascade, deliberately, and unlike every financially sensitive relation in
+  /// this schema: these are throwaway credentials, not financial records. A
+  /// deleted user must not leave live reset tokens behind pointing at an
+  /// account that no longer exists, and there is nothing here anyone could
+  /// need to audit or reconstruct later. Contrast Sale/Payment/Document, which
+  /// are Restrict precisely because losing them silently destroys money
+  /// history — see the schema-contract guard test.
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Project {
