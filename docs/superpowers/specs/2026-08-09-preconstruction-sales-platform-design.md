@@ -2,29 +2,34 @@
 
 **Date:** 2026-08-09
 **Status:** Approved for planning
+**Amended:** 2026-08-10 — deposits are receivable, installment plans carry a
+percentage charge, and staff sell rather than buyers self-serving. The affected
+sections are amended in place rather than appended to, so this document keeps
+describing the system that exists.
 
 ## Purpose
 
 A multi-tenant web platform where African property developers sell preconstruction
 units and manage installment payments. A developer defines a building and its
-units, buyers register against a project and commit to a unit under either full
-payment or an installment plan, and staff record payments as money arrives
-offline. The system generates the full payment schedule upfront, issues PDF
-invoices, receipts and statements, and emails reminders before and after each
-due date.
+units, staff sell a unit to a buyer under either full payment or an installment
+plan, and staff record payments as money arrives offline. The system generates the
+full payment schedule upfront, issues PDF invoices, receipts and statements, and
+emails reminders before and after each due date. Buyers sign in to watch their own
+contract; they do not transact.
 
 Buyers are assumed to be on phones with weak connections. That assumption drives
 real decisions throughout this document, not just CSS.
 
 ## Scope
 
-In scope: project and unit setup, buyer registration, plan selection, schedule
-generation, manual payment recording, PDF documents, email reminders via cron,
-developer arrears reporting, multi-currency, three roles, and a schema that
+In scope: project and unit setup, buyer registration by staff, plan selection,
+schedule generation, manual payment recording, PDF documents, email reminders via
+cron, developer arrears reporting, multi-currency, three roles, and a schema that
 accepts SMS reminders later without a migration.
 
 Out of scope for this build: online payment gateways, native mobile apps, a
-public marketing site, offline/PWA support, and actual SMS delivery.
+public marketing site, offline/PWA support, actual SMS delivery, and buyer
+self-service purchasing.
 
 ## Decisions
 
@@ -36,6 +41,9 @@ These were settled during brainstorming and are not open questions.
 | Tenancy | Multi-tenant SaaS. `Organization` owns everything; all queries scoped by `orgId`. |
 | Auth | Auth.js credentials provider, bcrypt passwords, JWT session. Same mechanism for all three roles. |
 | Payments | Manual recording only. No gateway, no webhooks, no card data. |
+| Buyer flow | Staff sell; buyers view. An agent or admin picks a unit from inventory, registers or selects the buyer, prices the plan and confirms — buyer self-service purchasing (the public `/buy` flow) was removed on 2026-08-10. Buyer dashboards are read-only. |
+| Deposits | Receivable, not presumed paid. The deposit is schedule entry `sequence 0`, due on the signing day, and settles only when a `Payment` is allocated against it. |
+| Installment charge | A percentage markup in basis points on the financed amount. `Project.installmentMarkupBps` is the default; `Sale.markupBps` snapshots what was agreed. Staff-only per-sale override at signing; never a field a buyer can submit. |
 | Rounding | Monthly amount rounds down to the currency's minor unit; the final installment absorbs the remainder. |
 | Due dates | Monthly anniversary of the signing date, clamped to the last valid day of short months. |
 | Allocation | Oldest unpaid entry first; excess cascades forward automatically. |
@@ -143,27 +151,72 @@ the past rather than a function of today.
 
 ## Amortization and schedule generation
 
-`generateSchedule({ priceMinor, depositMinor, months, signedAt, exponent })`
+`generateSchedule({ planType, priceMinor, depositMinor, markupBps, months, signedAt })`
 returns the complete array of entries. Pure, deterministic, no clock access —
 `signedAt` is always passed in.
 
 Rules:
 
 1. Financed amount is `priceMinor − depositMinor`.
-2. Base monthly amount is `floor(financed / months)` in minor units.
-3. Entries 1 through n−1 carry the base amount.
-4. Entry n carries `financed − base × (months − 1)`, absorbing the remainder.
-5. Entry k is due on the k-th monthly anniversary of `signedAt`.
-6. Day-of-month clamps to the last valid day when the target month is shorter.
+2. The installment charge is `floor(financed × markupBps / 10000)`, and the
+   amount the months amortize is `charged = financed + markup`. The charge is
+   levied on what is actually financed, so a bigger deposit genuinely costs the
+   buyer less and a full-payment buyer pays no charge at all. `markupBps` is
+   required, not defaulted: every caller lives in this repository, and a
+   forgotten charge must be a compile error rather than a free plan.
+3. A deposit becomes its own entry at `sequence 0`, due on the signing day, for
+   `depositMinor`. It is never marked up. A zero deposit produces no entry 0, so
+   a no-deposit plan is unchanged. Zero rather than one so the months keep the
+   numbers the contract uses — the first month is still installment 1 of 36, not
+   2 of 37.
+4. Base monthly amount is `floor(charged / months)` in minor units.
+5. Entries 1 through n−1 carry the base amount.
+6. Entry n carries `charged − base × (months − 1)`, absorbing the remainder.
+7. Entry k is due on the k-th monthly anniversary of `signedAt`.
+8. Day-of-month clamps to the last valid day when the target month is shorter.
    Signing on Jan 31 yields Feb 28 (or Feb 29 in a leap year), then Mar 31 — the
    original day is preserved and reapplied each month rather than degrading.
-7. A date never silently rolls forward into the following month.
+9. A date never silently rolls forward into the following month.
 
-Invariant, asserted in tests: the sum of all installment amounts equals
-`priceMinor − depositMinor` exactly, for every currency exponent.
+Invariant, asserted in tests: the sum of every entry equals `priceMinor + markup`
+exactly, for every currency exponent, term, deposit and rate. That is the whole
+point of putting the deposit in the schedule — the schedule is now the complete
+statement of what the buyer owes, so `summariseSale` reads total-owed, paid-to-date
+and balance off the entries and nothing else. Neither `priceMinor` nor
+`depositMinor` appears in that arithmetic: an installment buyer owes price plus
+charge, so subtracting from the price alone would under-report the balance by the
+entire fee.
+
+Basis points, not a percentage float, and the whole calculation stays in `BigInt`:
+10% is the integer `1000`, so no rounding error can enter through a binary
+fraction that cannot represent 0.1. Staff type a percentage and `percentToBps`
+converts it exactly, rejecting a third decimal place rather than silently rounding
+it. Division floors, so the charge rounds in the buyer's favour by at most one
+minor unit.
 
 Rejected inputs: deposit greater than or equal to price, `months < 1`,
-non-integer months, and negative amounts.
+non-integer months, negative amounts, `markupBps` outside 0–10000 or non-integer,
+and a full-payment plan carrying either a deposit or a markup.
+
+### Deposits are receivable, not presumed
+
+The first cut treated the deposit as money already in hand: it never appeared in
+the schedule, and `summariseSale` added `depositMinor` straight into paid-to-date.
+That is a hole, not a shortcut. `depositMinor` records an agreed term, and while
+the buyer could name it themselves a buyer could declare a 90% deposit, pay
+nothing, and read 90% paid on every dashboard, statement and receipt — with no
+`Payment` row anywhere to justify it. The developer's own arrears report would
+show them as current.
+
+Making the deposit entry 0 closes it with no special cases. The deposit reaches
+paid-to-date the way every other amount does, by being a schedule entry that a
+`Payment` was allocated against. `allocatePayment` already orders by sequence, so
+the first money in settles the deposit first. `deriveStatus` turns it OVERDUE the
+day after signing like any other entry, so a buyer who signed and never paid is
+in arrears tomorrow — which is exactly the truth. The reminder sweep sees one
+more unsettled entry and chases it. The only code that needed to know is display:
+`scheduleEntryLabel` renders sequence 0 as "Deposit", because "0." above the
+signing-day amount reads like a bug.
 
 ### Full payment produces a schedule too
 
@@ -233,6 +286,35 @@ one:
 
 Adding Africa's Talking or Twilio is then one adapter implementing the sender
 interface, plus a config flag. No schema change.
+
+## Buyer flow
+
+Staff sell; buyers view.
+
+The sale is created from inventory: an agent or admin opens a project, picks an
+available unit, and works through one form — the buyer (an existing buyer of the
+organisation from a server-rendered select, or a new one registered inline), the
+plan, the deposit, the term, and the installment charge prefilled from the project
+default. A confirm step prices the whole schedule with the same pure
+`previewSchedule` the write then persists, showing the deposit row, the charge on
+its own line and the total owed, before anything is committed. Registration
+therefore happens *through staff*: `registerBuyer` is called on the staff path
+with a temporary password the buyer changes, and there is no public sign-up.
+
+The buyer dashboard is read-only, and deliberately so. It shows their schedule,
+paid to date, total owed, balance, next due date, payment history and their own
+documents. Every query is scoped by the buyer id on the session. A buyer cannot
+create a sale, cannot record a payment, and cannot set or waive the installment
+charge — that last one is why `markupBps` is absent from the buyer-facing plan
+schema entirely and is discarded rather than validated for a BUYER actor. The
+public `/buy` flow that let a buyer commit themselves to a unit was removed on
+2026-08-10; nothing about the read-only dashboard changed with it.
+
+This matches how these sales actually close. The money arrives offline — bank
+transfer, mobile money, cash at the office — and an agent is already in the loop
+for every contract. A self-service purchase path added a surface where a buyer
+could set their own terms, and the deposit hole above is what that looked like in
+practice.
 
 ## Documents
 
@@ -319,11 +401,18 @@ Unit names:
 One organisation, "Sunrise Developments", with two projects in different
 currencies to prove nothing is hardcoded to USD: a Lagos tower priced in NGN and
 a Nairobi block priced in KES. Roughly four floors of six units each, using both
-naming patterns.
+naming patterns. The Lagos project charges nothing for paying over time and the
+Nairobi one charges 10%, so both configurations are exercised from the first page
+load rather than only the interesting one.
 
 Buyers seeded in meaningfully different states: one on a full-payment plan, one
 on a 36-month plan fully current, one with a partial payment outstanding, and one
 several months in arrears so the arrears report has real content on first run.
+
+Every seeded deposit is a real recorded payment, dated at signing and allocated
+through the same functions the service uses. Nothing in the seed is presumed paid:
+a state that the running application could not produce has no business being the
+first thing a reviewer sees.
 
 Login accounts for all three roles.
 
