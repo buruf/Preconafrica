@@ -5,6 +5,7 @@ import { InvoiceDocument } from '@/server/pdf/InvoiceDocument'
 import { ReceiptDocument } from '@/server/pdf/ReceiptDocument'
 import { StatementDocument } from '@/server/pdf/StatementDocument'
 import { deriveStatus } from '@/domain/status'
+import { computeMarkupMinor } from '@/domain/schedule'
 import { summariseSale } from '@/server/services/sales'
 
 /**
@@ -61,7 +62,10 @@ export async function renderDocumentPdf(
           buyerEmail={sale.buyer.email}
           currency={sale.currency}
           sequence={entry.sequence}
-          totalInstallments={sale.scheduleEntries.length}
+          // The contract's months, not the schedule's rows: a deposit adds an
+          // entry without adding a month, so `scheduleEntries.length` printed
+          // "3 of 37" on every 36-month sale that carried one.
+          termMonths={sale.termMonths}
           dueDate={entry.dueDate}
           amountDueMinor={entry.amountDueMinor}
           amountPaidMinor={entry.amountPaidMinor}
@@ -125,8 +129,18 @@ export async function renderDocumentPdf(
         buyerPhone={sale.buyer.phone}
         currency={sale.currency}
         planType={sale.planType}
+        termMonths={sale.termMonths}
         priceMinor={sale.priceMinor}
         depositMinor={sale.depositMinor}
+        markupBps={sale.markupBps}
+        // Recomputed from the sale's own signing snapshot, the same way the
+        // dashboards do it, rather than inferred from the schedule total —
+        // one arithmetic, three stored numbers, no figure to drift.
+        markupMinor={
+          sale.markupBps > 0
+            ? computeMarkupMinor(sale.priceMinor - sale.depositMinor, sale.markupBps)
+            : 0n
+        }
         signedAt={sale.signedAt}
         expectedCompletion={sale.project.expectedCompletion}
         entries={sale.scheduleEntries.map((e) => ({

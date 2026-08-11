@@ -1,6 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { formatMinor } from '@/domain/currency'
+import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
 import type { InstallmentStatus } from '@/domain/status'
 
 export interface StatementProps {
@@ -13,8 +14,19 @@ export interface StatementProps {
   buyerPhone: string
   currency: string
   planType: 'FULL' | 'INSTALLMENTS'
+  /**
+   * The agreed term, straight off the sale. Not `entries.length`: with a
+   * deposit the schedule carries one entry more than there are months, so a
+   * 36-month contract was printing "37 monthly installments" — the statement
+   * contradicting the contract it is a statement of.
+   */
+  termMonths: number | null
   priceMinor: bigint
   depositMinor: bigint
+  /** Basis points, for the rate quoted beside the charge. Zero prints nothing. */
+  markupBps: number
+  /** The charge in money, already inside the installments below. */
+  markupMinor: bigint
   signedAt: Date
   expectedCompletion: Date
   entries: Array<{
@@ -61,7 +73,7 @@ export function StatementDocument(props: StatementProps) {
             <Text>
               {props.planType === 'FULL'
                 ? 'Full payment'
-                : `${props.entries.length} monthly installments`}
+                : `${props.termMonths ?? 0} monthly installments`}
             </Text>
           </View>
           <View style={styles.row}>
@@ -77,9 +89,17 @@ export function StatementDocument(props: StatementProps) {
             <Text>{formatMinor(props.priceMinor, props.currency)}</Text>
           </View>
           <View style={styles.row}>
-            <Text style={styles.label}>Deposit</Text>
+            <Text style={styles.label}>Deposit (due at signing)</Text>
             <Text>{formatMinor(props.depositMinor, props.currency)}</Text>
           </View>
+          {props.markupMinor > 0n ? (
+            <View style={styles.row}>
+              <Text style={styles.label}>
+                Installment charge ({bpsToPercentString(props.markupBps)}%)
+              </Text>
+              <Text>{formatMinor(props.markupMinor, props.currency)}</Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={styles.tableHeader}>
@@ -91,7 +111,7 @@ export function StatementDocument(props: StatementProps) {
         </View>
         {props.entries.map((entry) => (
           <View key={entry.sequence} style={styles.tableRow} wrap={false}>
-            <Text style={styles.colSeq}>{entry.sequence}</Text>
+            <Text style={styles.colSeq}>{scheduleEntryLabel(entry.sequence)}</Text>
             <Text style={styles.colDate}>{date(entry.dueDate)}</Text>
             <Text style={styles.colAmount}>{formatMinor(entry.amountDueMinor, props.currency)}</Text>
             <Text style={styles.colPaid}>{formatMinor(entry.amountPaidMinor, props.currency)}</Text>
@@ -99,8 +119,13 @@ export function StatementDocument(props: StatementProps) {
           </View>
         ))}
 
+        {/* "Total owed", not "Total scheduled": with an installment charge the
+            price is no longer what the buyer owes, and this figure — the sum of
+            the rows above — is. Naming it after the schedule invited the reader
+            to compare it against the purchase price and conclude the statement
+            was wrong. */}
         <View style={styles.total}>
-          <Text>Total scheduled</Text>
+          <Text>Total owed</Text>
           <Text>{formatMinor(props.totalMinor, props.currency)}</Text>
         </View>
         <View style={styles.total}>

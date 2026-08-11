@@ -4,6 +4,7 @@ import { requireStaff } from '@/server/session'
 import { getSaleForStaff, summariseSale } from '@/server/services/sales'
 import { ServiceError } from '@/server/services/errors'
 import { deriveStatus } from '@/domain/status'
+import { bpsToPercentString, computeMarkupMinor, scheduleEntryLabel } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { StatusBadge } from '@/components/StatusBadge'
@@ -43,6 +44,16 @@ export default async function StaffSalePage({ params }: { params: { id: string }
   const summary = summariseSale(sale, asOf)
   const money = (amount: bigint) => formatMinor(amount, sale.currency)
 
+  // Recomputed from the sale's own snapshot — priceMinor, depositMinor and
+  // markupBps were all frozen at signing — rather than inferred by subtracting
+  // the price from the schedule total, so the line stays right even if a row
+  // were ever hand-repaired. Without it, a marked-up sale simply reads as owing
+  // more than the unit cost, with nothing on the page explaining why.
+  const markupMinor =
+    sale.markupBps > 0
+      ? computeMarkupMinor(sale.priceMinor - sale.depositMinor, sale.markupBps)
+      : 0n
+
   // getSaleForStaff includes `documents` as the sale's flat list, not a
   // per-entry relation — build the lookup once rather than scanning the list
   // for every row.
@@ -69,7 +80,17 @@ export default async function StaffSalePage({ params }: { params: { id: string }
         }
       />
 
-      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <p className="text-xs text-slate-500">Total owed</p>
+          <p className="text-lg font-semibold">{money(summary.totalOwedMinor)}</p>
+          {markupMinor > 0n ? (
+            <p className="mt-1 text-xs text-slate-500">
+              includes {money(markupMinor)} installment charge (
+              {bpsToPercentString(sale.markupBps)}%)
+            </p>
+          ) : null}
+        </Card>
         <Card>
           <p className="text-xs text-slate-500">Paid to date</p>
           <p className="text-lg font-semibold text-emerald-700">{money(summary.paidToDateMinor)}</p>
@@ -110,7 +131,7 @@ export default async function StaffSalePage({ params }: { params: { id: string }
             <li key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
               <div className="min-w-0">
                 <p className="text-sm font-medium">
-                  {entry.sequence}. {date(entry.dueDate)}
+                  {scheduleEntryLabel(entry.sequence)} · {date(entry.dueDate)}
                 </p>
                 <p className="text-xs text-slate-500">
                   {money(entry.amountPaidMinor)} of {money(entry.amountDueMinor)} paid
