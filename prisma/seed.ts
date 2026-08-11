@@ -63,6 +63,11 @@ async function main() {
       unitsPerFloor: 6,
       startFloor: 1,
       namingPattern: '{floor}{index:02}',
+      // Deliberately zero, and deliberately explicit rather than left to the
+      // column default: one seeded project charges nothing for paying over time
+      // and one charges 10%, so every schedule, dashboard line and PDF is
+      // exercised in both configurations rather than only the interesting one.
+      installmentMarkupBps: 0,
       reminderDaysBefore: 7,
       overdueNoticeDaysAfter: 3
     }
@@ -79,6 +84,11 @@ async function main() {
       unitsPerFloor: 6,
       startFloor: 1,
       namingPattern: '{floor}{letter}',
+      // 10% on whatever a buyer finances. The live demonstration of the fee:
+      // both Nairobi installment plans below carry it, so the "includes an
+      // installment charge" line on the dashboards and the charge line on the
+      // statement have real figures behind them from the first page load.
+      installmentMarkupBps: 1000,
       reminderDaysBefore: 10,
       overdueNoticeDaysAfter: 5
     }
@@ -143,8 +153,14 @@ async function main() {
    * types, so seeding never has to boot the auth stack.
    */
   async function createSale(opts: {
-    projectId: string
-    currency: string
+    /**
+     * The project row itself, not an id plus a currency. The currency and the
+     * installment charge have to be the ones this project actually carries: a
+     * seed that passed them separately could name Riverside Court and price it
+     * in NGN at 0%, and the mismatch would only surface as figures that quietly
+     * fail to add up.
+     */
+    project: { id: string; currency: string; installmentMarkupBps: number }
     buyerId: string
     buyerName: string
     unitName: string
@@ -154,15 +170,25 @@ async function main() {
     signedAt: Date
     payments: Array<{ amountMajor: string; receivedAt: Date; method: PaymentMethod; reference: string }>
   }) {
+    const currency = opts.project.currency
     const unit = await prisma.unit.findFirstOrThrow({
-      where: { projectId: opts.projectId, name: opts.unitName }
+      where: { projectId: opts.project.id, name: opts.unitName }
     })
 
-    const depositMinor = toMinor(opts.depositMajor, opts.currency)
+    const depositMinor = toMinor(opts.depositMajor, currency)
+    // The project's default rate, snapshotted onto the sale — the same figure
+    // `createSale` resolves for a staff-created sale with no override, which is
+    // what every seeded sale is. Zero for a FULL plan whatever the project
+    // charges: nothing is financed, so there is nothing to charge for, and
+    // `generateSchedule` rejects a marked-up full payment outright. This mirrors
+    // `resolveMarkupBps` rather than calling it, because that function needs a
+    // SessionActor and the seed has no session.
+    const markupBps = opts.planType === 'INSTALLMENTS' ? opts.project.installmentMarkupBps : 0
     const drafts = generateSchedule({
       planType: opts.planType,
       priceMinor: unit.priceMinor,
       depositMinor,
+      markupBps,
       months: opts.termMonths ?? 0,
       signedAt: opts.signedAt
     })
@@ -170,13 +196,14 @@ async function main() {
     const sale = await prisma.sale.create({
       data: {
         orgId: org.id,
-        projectId: opts.projectId,
+        projectId: opts.project.id,
         unitId: unit.id,
         buyerId: opts.buyerId,
         planType: opts.planType,
         priceMinor: unit.priceMinor,
         depositMinor,
-        currency: opts.currency,
+        markupBps,
+        currency: currency,
         termMonths: opts.termMonths,
         signedAt: opts.signedAt,
         createdByUserId: agent.id,
@@ -199,7 +226,7 @@ async function main() {
           amountDueMinor: e.amountDueMinor,
           amountPaidMinor: e.amountPaidMinor
         })),
-        toMinor(p.amountMajor, opts.currency)
+        toMinor(p.amountMajor, currency)
       )
 
       // A seed that quietly loses money is worse than one that fails loudly:
@@ -221,7 +248,7 @@ async function main() {
           data: {
             orgId: org.id,
             saleId: sale.id,
-            amountMinor: toMinor(p.amountMajor, opts.currency),
+            amountMinor: toMinor(p.amountMajor, currency),
             receivedAt: p.receivedAt,
             method: p.method,
             reference: p.reference,
@@ -287,57 +314,83 @@ async function main() {
   const zainab = await createBuyer('Zainab Bello', 'zainab@buyer.test', '+2347098765432', null)
   const joseph = await createBuyer('Joseph Otieno', 'joseph@buyer.test', '+254733222111', 'Ngong Road, Nairobi')
 
-  // 1. Full payment, settled.
+  // Every installment fixture below opens with a payment for the deposit
+  // itself, because the deposit is receivable, not received: it is schedule
+  // entry 0, due on the signing day, and the only thing that settles it is a
+  // Payment allocated against it. A seeded buyer with no deposit payment is a
+  // buyer who signed, never paid a naira, and is one day in arrears — which is
+  // the truth of the model but not the demo state these four fixtures exist to
+  // show. `allocatePayment` walks the entries in sequence order, so the deposit
+  // payment lands on entry 0 with no special handling here.
+
+  // 1. Full payment, settled. Nothing financed, so no deposit and no charge.
   // Unit '101' is the deliberate choice: indexOnFloor 1 -> 2 bedrooms ->
   // 145,000,000 NGN, which is exactly the payment amount below. Unit '102'
   // (3 bedrooms, 250,000,000 NGN) would leave this "settled" sale half paid.
   await createSale({
-    projectId: lagos.id, currency: 'NGN', buyerId: amina.id, buyerName: amina.fullName, unitName: '101',
+    project: lagos, buyerId: amina.id, buyerName: amina.fullName, unitName: '101',
     planType: 'FULL', depositMajor: '0', termMonths: null, signedAt: utc(2026, 3, 2),
     payments: [{ amountMajor: '145000000', receivedAt: utc(2026, 3, 2), method: 'BANK_TRANSFER', reference: 'GTB/2026/03/0021' }]
   })
 
-  // 2. 36-month plan, fully current — five installments paid on time.
-  // Unit '2A' (2 bedrooms, 11,200,000 KES) is what makes the ~255,556 KES
-  // monthly payment below line up with the generated schedule's installment
-  // amount; '2B' is a 3-bedroom unit priced too high for that to hold.
+  // 2. 36-month plan, fully current — deposit plus five installments paid on time.
+  // Unit '2A' (2 bedrooms, 11,200,000 KES). A 2,000,000 deposit finances
+  // 9,200,000; Riverside Court charges 10%, so the markup is 920,000 and the
+  // installments amortize 10,120,000 -> 281,111.11 a month (x35, final
+  // 281,111.15). Total owed is 12,120,000 = price 11,200,000 + markup 920,000.
+  // The deposit payment settles entry 0 exactly; each of the five monthly
+  // payments settles one installment exactly, so nothing is left partial.
+  // Installments 1-5 fell due Mar-Jul 2026 and are paid; installment 6 is not
+  // due until 2026-08-15, so this buyer has nothing overdue.
   await createSale({
-    projectId: nairobi.id, currency: 'KES', buyerId: kwame.id, buyerName: kwame.fullName, unitName: '2A',
+    project: nairobi, buyerId: kwame.id, buyerName: kwame.fullName, unitName: '2A',
     planType: 'INSTALLMENTS', depositMajor: '2000000', termMonths: 36, signedAt: utc(2026, 2, 15),
-    payments: [1, 2, 3, 4, 5].map((m) => ({
-      amountMajor: '255556', receivedAt: utc(2026, 2 + m, 15), method: 'MOBILE_MONEY' as PaymentMethod,
-      reference: `MPESA-RJ${m}K4T2X9`
-    }))
+    payments: [
+      { amountMajor: '2000000', receivedAt: utc(2026, 2, 15), method: 'BANK_TRANSFER', reference: 'KCB/2026/02/1188' },
+      ...[1, 2, 3, 4, 5].map((m) => ({
+        amountMajor: '281111.11', receivedAt: utc(2026, 2 + m, 15), method: 'MOBILE_MONEY' as PaymentMethod,
+        reference: `MPESA-RJ${m}K4T2X9`
+      }))
+    ]
   })
 
   // 3. Partial payment outstanding on the current installment.
-  // Unit '303' (1 bedroom, 85,000,000 NGN) makes the first payment below
-  // exactly settle installment 1 and the second payment land partway into
-  // installment 2 — the fully-paid-then-partial cascade this fixture needs.
+  // Unit '303' (1 bedroom, 85,000,000 NGN) on Sunrise Heights, which charges
+  // nothing: a 25,000,000 deposit finances 60,000,000 over 36 months at 0%, so
+  // the monthly installment is 1,666,666.66 (final 1,666,666.90) and total owed
+  // is exactly the 85,000,000 price. The deposit payment settles entry 0, the
+  // second payment settles installment 1 exactly, and the 800,000 lands partway
+  // into installment 2 (due 2026-07-20, now past) — one overdue entry, and the
+  // only fixture where the markup line reads zero.
   await createSale({
-    projectId: lagos.id, currency: 'NGN', buyerId: zainab.id, buyerName: zainab.fullName, unitName: '303',
+    project: lagos, buyerId: zainab.id, buyerName: zainab.fullName, unitName: '303',
     planType: 'INSTALLMENTS', depositMajor: '25000000', termMonths: 36, signedAt: utc(2026, 5, 20),
     payments: [
+      { amountMajor: '25000000', receivedAt: utc(2026, 5, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/05/7742' },
       { amountMajor: '1666666.66', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
       { amountMajor: '800000', receivedAt: utc(2026, 7, 22), method: 'BANK_TRANSFER', reference: 'ZEN/2026/07/9002' }
     ]
   })
 
   // 4. Several months in arrears, so the arrears report has content on day one.
-  // Unit '4C' (indexOnFloor 3 -> 1 bedroom, 7,500,000 KES) with a 1,500,000
-  // deposit finances 6,000,000 over 36 months -> a monthly installment of
-  // 166,666.66 KES (166,666 * 35, final installment 166,666.90). Against
-  // "today" (2026-08-09), installments 1-6 (due Feb-Jul 2026) are already
-  // past due; installment 7 (due 2026-08-10) is not overdue yet. Two CASH
-  // payments of 150,000 KES each (300,000 total) fully settle installment 1
-  // and land 13,333,334 minor units into installment 2, leaving installments
-  // 2 (partial) through 6 (untouched) — five overdue-and-unpaid entries as
-  // of 2026-08-09, verified against the actual schedule/allocation output
-  // rather than assumed.
+  // Unit '4C' (indexOnFloor 3 -> 1 bedroom, 7,500,000 KES). A 1,500,000 deposit
+  // finances 6,000,000; at Riverside Court's 10% the markup is 600,000, so the
+  // installments amortize 6,600,000 -> 183,333.33 a month (x35, final
+  // 183,333.45). Total owed is 8,100,000 = price 7,500,000 + markup 600,000.
+  //
+  // Signed 2026-01-10, so against "today" (2026-08-10) entries 0 through 7 have
+  // all reached their due date — but an entry due *today* is not yet overdue
+  // (deriveStatus needs the day to have passed), which leaves entries 0-6 as the
+  // seven that could be in arrears. The deposit payment settles entry 0. Two
+  // CASH payments of 150,000 (300,000 together) then settle installment 1
+  // exactly (183,333.33) and land the remaining 116,666.67 into installment 2,
+  // leaving it partial. Unsettled and past due: installments 2 (partial), 3, 4,
+  // 5 and 6 — exactly five, with installment 7 due today still PENDING.
   await createSale({
-    projectId: nairobi.id, currency: 'KES', buyerId: joseph.id, buyerName: joseph.fullName, unitName: '4C',
+    project: nairobi, buyerId: joseph.id, buyerName: joseph.fullName, unitName: '4C',
     planType: 'INSTALLMENTS', depositMajor: '1500000', termMonths: 36, signedAt: utc(2026, 1, 10),
     payments: [
+      { amountMajor: '1500000', receivedAt: utc(2026, 1, 10), method: 'BANK_TRANSFER', reference: 'EQTY/2026/01/0417' },
       { amountMajor: '150000', receivedAt: utc(2026, 2, 10), method: 'CASH', reference: 'RCPT-0091' },
       { amountMajor: '150000', receivedAt: utc(2026, 3, 12), method: 'CASH', reference: 'RCPT-0114' }
     ]
@@ -345,10 +398,16 @@ async function main() {
 
   console.log('Seeded:', {
     org: org.name,
-    projects: 2,
+    projects: `2 (Sunrise Heights 0%, Riverside Court 10%)`,
     units: await prisma.unit.count(),
     sales: await prisma.sale.count(),
     scheduleEntries: await prisma.scheduleEntry.count(),
+    payments: await prisma.payment.count(),
+    documents: await prisma.document.count(),
+    documentSeq: (await prisma.organization.findUniqueOrThrow({
+      where: { id: org.id },
+      select: { documentSeq: true }
+    })).documentSeq,
     admin: admin.email,
     agent: agent.email
   })

@@ -84,6 +84,14 @@ export function NewProjectForm() {
             <Field label="Price" name="defaultPrice" required placeholder="145000000" />
           </div>
 
+          <Field
+            label="Installment charge (%)"
+            name="installmentMarkupPercent"
+            defaultValue="0"
+            placeholder="10"
+            hint="Charged on the financed amount (price less deposit) for buyers paying by installments. Up to two decimal places. Staff can override it on an individual sale."
+          />
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Field
               label="Remind days before"

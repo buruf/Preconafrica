@@ -8,6 +8,9 @@ import { constraintTargetIncludes, reserveUnit } from '@/server/services/units'
 import { toMinor } from '@/domain/currency'
 import {
   DEFAULT_TERM_MONTHS,
+  DEPOSIT_SEQUENCE,
+  MAX_MARKUP_BPS,
+  computeMarkupMinor,
   generateSchedule,
   totalScheduledMinor,
   type PlanType,
@@ -56,38 +59,99 @@ export const PlanSelectionSchema = z
     )
   })
   .transform((value) => (value.planType === 'FULL' ? { ...value, deposit: '0' } : value))
+// Deliberately no markup field. The installment charge is the developer's fee,
+// not a term the buyer fills in — it comes from the project default, with a
+// staff-only override at createSale. Accepting it from this form-facing schema
+// would let a buyer post markupBps=0 and waive their own fee.
+
+/**
+ * The staff override as it travels from the sell form, through the confirm
+ * URL, to the create action: an optional whole number of basis points.
+ *
+ * Kept out of `PlanSelectionSchema` on purpose. That schema parses what a
+ * buyer-shaped form submits; this one is only ever parsed on pages behind
+ * `requireStaff()`, and `resolveMarkupBps` discards the value anyway for a
+ * BUYER actor. Absent — a blank input, a missing query param — means "use the
+ * project default", which is exactly what an undefined override resolves to.
+ */
+export const MarkupOverrideSchema = z.preprocess(
+  (value) => (value === '' || value === null ? undefined : value),
+  z.coerce
+    .number()
+    .int('The installment charge must be a whole number of basis points')
+    .min(0)
+    .max(MAX_MARKUP_BPS)
+    .optional()
+)
 
 export interface SchedulePreview {
   entries: ScheduleEntryDraft[]
   totalMinor: bigint
   monthlyMinor: bigint | null
   finalMinor: bigint | null
+  /**
+   * The installment charge already baked into the entries, so a UI can show it
+   * as its own line ("Installment charge: X") instead of leaving the buyer to
+   * wonder why the total exceeds the price. Zero for a FULL plan, and zero for
+   * an installment plan at 0 bps.
+   */
+  markupMinor: bigint
 }
 
 /** Pure wrapper — no database access, so the UI can preview before committing. */
 export function previewSchedule(input: ScheduleInput): SchedulePreview {
+  // Runs first: it validates the whole input, so everything below can trust it.
   const entries = generateSchedule(input)
   const isInstallments = input.planType === 'INSTALLMENTS'
+
+  // `monthlyMinor`/`finalMinor` describe the *monthly* installments, and the
+  // deposit is now the first entry in the array — so they are picked from the
+  // entries that are actually months. Reading entries[0] blindly would print a
+  // buyer's deposit under "Monthly".
+  const monthly = entries.filter((entry) => entry.sequence !== DEPOSIT_SEQUENCE)
 
   return {
     entries,
     totalMinor: totalScheduledMinor(entries),
-    monthlyMinor: isInstallments ? entries[0].amountDueMinor : null,
-    finalMinor: isInstallments ? entries[entries.length - 1].amountDueMinor : null
+    monthlyMinor: isInstallments ? monthly[0].amountDueMinor : null,
+    finalMinor: isInstallments ? monthly[monthly.length - 1].amountDueMinor : null,
+    markupMinor: isInstallments
+      ? computeMarkupMinor(input.priceMinor - input.depositMinor, input.markupBps)
+      : 0n
   }
 }
 
 export interface SaleSummary {
+  /** Everything the contract obliges the buyer to pay: price plus any markup. */
+  totalOwedMinor: bigint
   paidToDateMinor: bigint
   balanceMinor: bigint
   nextDue: { dueDate: Date; amountMinor: bigint } | null
   overdueCount: number
 }
 
+/**
+ * Both sides of this summary now come from the schedule and nowhere else.
+ *
+ * Paid-to-date is the sum of what has actually been allocated. `depositMinor` is
+ * deliberately absent from the input type: it records the agreed terms and feeds
+ * `generateSchedule`, but it is not money received. The deposit reaches this
+ * figure the way every other amount does — by being a schedule entry that a
+ * `Payment` was allocated against. Adding it as a separate term is what let a
+ * buyer self-declare a 90% deposit, pay nothing, and read 90% paid on every
+ * dashboard and PDF.
+ *
+ * Total-owed is the sum of what is due, and `priceMinor` is absent for the
+ * mirror-image reason. Once a plan can carry an installment markup, the price is
+ * no longer the amount owed — an installment buyer owes price plus markup — so
+ * subtracting from the price would under-report the balance by the entire fee
+ * and show a sale as settled while a month of charge was still outstanding. The
+ * schedule sums to exactly what is owed by construction (see `generateSchedule`),
+ * which makes it the one figure that stays right for FULL plans, zero-markup
+ * plans, and marked-up plans alike.
+ */
 export function summariseSale(
   sale: {
-    priceMinor: bigint
-    depositMinor: bigint
     scheduleEntries: Array<{ dueDate: Date; amountDueMinor: bigint; amountPaidMinor: bigint }>
   },
   asOf: Date
@@ -96,14 +160,19 @@ export function summariseSale(
     (a, b) => a.dueDate.getTime() - b.dueDate.getTime()
   )
 
-  const allocatedMinor = entries.reduce((sum, e) => sum + e.amountPaidMinor, 0n)
-  const paidToDateMinor = sale.depositMinor + allocatedMinor
-  const balanceMinor = sale.priceMinor - paidToDateMinor
+  const totalOwedMinor = entries.reduce((sum, e) => sum + e.amountDueMinor, 0n)
+  const paidToDateMinor = entries.reduce((sum, e) => sum + e.amountPaidMinor, 0n)
+  const balanceMinor = totalOwedMinor - paidToDateMinor
 
   const next = entries.find((e) => outstandingMinor(e) > 0n)
 
   return {
+    totalOwedMinor,
     paidToDateMinor,
+    // Clamped because this function does not own the rows it is handed. The
+    // services cannot produce an over-allocation — `allocatePayment` never
+    // exceeds an entry's due — but a hand-repaired sale could, and a buyer must
+    // never be shown a negative balance.
     balanceMinor: balanceMinor > 0n ? balanceMinor : 0n,
     nextDue: next ? { dueDate: next.dueDate, amountMinor: outstandingMinor(next) } : null,
     overdueCount: entries.filter((e) => deriveStatus(e, asOf) === 'OVERDUE').length
@@ -168,6 +237,49 @@ export async function registerBuyer(orgId: string, input: BuyerRegistrationInput
   }
 }
 
+/**
+ * Settles which installment charge a new sale is signed at.
+ *
+ * Two rules, both of which the buyer-facing flow depends on:
+ *
+ *  1. Only ADMIN and AGENT may deviate from the project default. A BUYER's
+ *     `markupBps` is discarded rather than validated — this is the developer's
+ *     fee, and a buyer who could post `markupBps: 0` would waive it. Discarding
+ *     beats rejecting: the buy flow never sends the field, so a forged one is an
+ *     attack, and the honest path must not be able to fail on it.
+ *  2. A FULL plan is always 0. Nothing is financed, so there is nothing to
+ *     charge for — the same normalisation `PlanSelectionSchema` applies to the
+ *     deposit. Without it, every full-payment sale on a project that charges a
+ *     markup would die on `generateSchedule`'s FULL-plan guard.
+ *
+ * Exported for the tests rather than for any caller: rule 1 is a security
+ * control, and a security control that is only reachable through a function
+ * needing a live Unit, Buyer and transaction is a security control nobody
+ * tests. `createSale` remains its only production caller.
+ */
+export function resolveMarkupBps(
+  actor: SessionActor,
+  input: { planType: PlanType; markupBps?: number },
+  projectDefaultBps: number
+): number {
+  if (input.planType !== 'INSTALLMENTS') return 0
+
+  const mayOverride = actor.role === 'ADMIN' || actor.role === 'AGENT'
+  const resolved =
+    mayOverride && input.markupBps !== undefined ? input.markupBps : projectDefaultBps
+
+  // Checked here rather than left to generateSchedule so a staff typo surfaces
+  // as a validation message on the form instead of a raw ScheduleError.
+  if (!Number.isInteger(resolved) || resolved < 0 || resolved > MAX_MARKUP_BPS) {
+    throw new ServiceError(
+      `The installment charge must be a whole number of basis points between 0 and ${MAX_MARKUP_BPS}.`,
+      'VALIDATION'
+    )
+  }
+
+  return resolved
+}
+
 export async function createSale(
   actor: SessionActor,
   input: {
@@ -176,6 +288,12 @@ export async function createSale(
     planType: PlanType
     deposit: string
     termMonths: number
+    /**
+     * Staff-only override of the project's default installment charge, in basis
+     * points. Omitted — or supplied by a BUYER actor — means "use the project
+     * default". A buyer must never be able to set the fee they are charged.
+     */
+    markupBps?: number
     signedAt: Date
   }
 ) {
@@ -190,7 +308,7 @@ export async function createSale(
 
   const unit = await prisma.unit.findFirst({
     where: { id: input.unitId, project: { orgId: actor.orgId } },
-    include: { project: { select: { id: true, currency: true } } }
+    include: { project: { select: { id: true, currency: true, installmentMarkupBps: true } } }
   })
   if (!unit) throw new ServiceError('Unit not found', 'NOT_FOUND')
   if (unit.status !== 'AVAILABLE') {
@@ -203,10 +321,13 @@ export async function createSale(
   if (!buyer) throw new ServiceError('Buyer not found', 'NOT_FOUND')
 
   const depositMinor = toMinor(input.deposit, unit.project.currency)
+  const markupBps = resolveMarkupBps(actor, input, unit.project.installmentMarkupBps)
+
   const drafts = generateSchedule({
     planType: input.planType,
     priceMinor: unit.priceMinor,
     depositMinor,
+    markupBps,
     months: input.termMonths,
     signedAt: input.signedAt
   })
@@ -227,6 +348,9 @@ export async function createSale(
         // Snapshotted: repricing the unit later must not alter this contract.
         priceMinor: unit.priceMinor,
         depositMinor,
+        // Snapshotted alongside the price: re-rating the project's installment
+        // charge later must not restate what this buyer agreed to pay.
+        markupBps,
         currency: unit.project.currency,
         termMonths: input.planType === 'INSTALLMENTS' ? input.termMonths : null,
         signedAt: input.signedAt,
@@ -259,6 +383,23 @@ export async function getSaleForStaff(actor: SessionActor, saleId: string) {
   })
   if (!sale) throw new ServiceError('Sale not found', 'NOT_FOUND')
   return sale
+}
+
+/**
+ * Every buyer of the actor's organisation, for the "sell to an existing buyer"
+ * picker on the staff sale form.
+ *
+ * Staff-only and org-scoped: the list names people, and one developer's client
+ * roster must never be selectable from another's form. Returns only what the
+ * option label needs — no address, no email, and nothing about their sales.
+ */
+export async function listBuyers(actor: SessionActor) {
+  assertRole(actor, ['ADMIN', 'AGENT'])
+  return prisma.buyer.findMany({
+    where: { orgId: actor.orgId },
+    orderBy: { fullName: 'asc' },
+    select: { id: true, fullName: true, phone: true }
+  })
 }
 
 export async function getSaleForBuyer(actor: SessionActor & { buyerId: string }) {

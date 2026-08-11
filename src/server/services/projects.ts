@@ -4,6 +4,7 @@ import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { isSupportedCurrency, toMinor } from '@/domain/currency'
 import { generateUnitNames, UnitPatternError } from '@/domain/units'
+import { percentToBps } from '@/domain/schedule'
 import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
 
 const MAX_UNITS = 2000
@@ -26,6 +27,17 @@ export const CreateProjectSchema = z
     defaultBedrooms: z.coerce.number().int().min(0).max(10),
     defaultSizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE),
     defaultPrice: moneyString('Price'),
+    // What this project charges, by default, for paying by installments —
+    // entered as a percentage because that is how staff quote it, stored as
+    // basis points because that is the only representation the money core
+    // holds exactly. Blank reads as 0: a project that charges nothing is the
+    // ordinary case, not a validation error. It stays a string through the
+    // schema (percentToBps parses the digits, never a float) and is converted
+    // once in createProject, exactly as defaultPrice is.
+    installmentMarkupPercent: z.preprocess(
+      (value) => (value === '' || value === null || value === undefined ? '0' : value),
+      z.string()
+    ),
     reminderDaysBefore: z.coerce.number().int().min(0).max(60),
     overdueNoticeDaysAfter: z.coerce.number().int().min(0).max(60)
   })
@@ -46,6 +58,22 @@ export const CreateProjectSchema = z
         code: z.ZodIssueCode.custom,
         path: ['defaultPrice'],
         message: error instanceof Error ? error.message : 'Invalid price'
+      })
+    }
+
+    // The percent -> basis-point conversion has to be exact, so anything the
+    // conversion cannot hold — a third decimal place, a negative, above 100% —
+    // is a form error here rather than a ScheduleError from deep inside
+    // createProject. Same shape as the price check above, and for the same
+    // reason: the schema owns "can this be converted", the service owns the
+    // conversion.
+    try {
+      percentToBps(value.installmentMarkupPercent)
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['installmentMarkupPercent'],
+        message: error instanceof Error ? error.message : 'Invalid installment charge'
       })
     }
 
@@ -91,6 +119,7 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
   }
 
   const priceMinor = toMinor(input.defaultPrice, input.currency)
+  const installmentMarkupBps = percentToBps(input.installmentMarkupPercent)
 
   // One transaction: a project that half-generated its units is worse than one
   // that failed outright.
@@ -106,6 +135,7 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
         unitsPerFloor: input.unitsPerFloor,
         startFloor: input.startFloor,
         namingPattern: input.namingPattern,
+        installmentMarkupBps,
         reminderDaysBefore: input.reminderDaysBefore,
         overdueNoticeDaysAfter: input.overdueNoticeDaysAfter
       }

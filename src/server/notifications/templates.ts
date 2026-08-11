@@ -47,10 +47,16 @@ export function renderTemplate(key: TemplateKey, data: TemplateData) {
       ? `Payment due in ${plural(data.daysUntilDue, 'day')} — ${data.projectName} unit ${data.unitName}`
       : `Overdue payment — ${data.projectName} unit ${data.unitName}`
 
+  // "Payment", not "installment". The sweep reminds on every unsettled schedule
+  // entry, and the deposit is now one of them — calling a deposit an
+  // installment is wrong on precisely the notice a buyer is most likely to
+  // query. Neutral wording is right for both and costs the monthly notices
+  // nothing. One string, so the text and HTML bodies cannot say different
+  // things (`leadHtml` below differs only in escaping the unit name).
   const lead =
     key === 'DUE_SOON'
-      ? `Your next installment of ${amount} for unit ${data.unitName} is due on ${due}, in ${plural(data.daysUntilDue, 'day')}.`
-      : `Your installment of ${amount} for unit ${data.unitName} was due on ${due} and is now ${plural(data.daysLate, 'day')} late.`
+      ? `Your next payment of ${amount} for unit ${data.unitName} is due on ${due}, in ${plural(data.daysUntilDue, 'day')}.`
+      : `Your payment of ${amount} for unit ${data.unitName} was due on ${due} and is now ${plural(data.daysLate, 'day')} late.`
 
   const text = [
     `Hello ${data.buyerName},`,
@@ -77,8 +83,8 @@ export function renderTemplate(key: TemplateKey, data: TemplateData) {
 
   const leadHtml =
     key === 'DUE_SOON'
-      ? `Your next installment of ${amount} for unit ${unitNameHtml} is due on ${due}, in ${plural(data.daysUntilDue, 'day')}.`
-      : `Your installment of ${amount} for unit ${unitNameHtml} was due on ${due} and is now ${plural(data.daysLate, 'day')} late.`
+      ? `Your next payment of ${amount} for unit ${unitNameHtml} is due on ${due}, in ${plural(data.daysUntilDue, 'day')}.`
+      : `Your payment of ${amount} for unit ${unitNameHtml} was due on ${due} and is now ${plural(data.daysLate, 'day')} late.`
 
   const html = `<!doctype html><html><body style="font-family:system-ui,sans-serif;font-size:15px;color:#0f172a;line-height:1.5">
 <p>Hello ${buyerNameHtml},</p>

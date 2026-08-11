@@ -1,6 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { formatMinor } from '@/domain/currency'
+import { scheduleEntryLabel } from '@/domain/schedule'
 
 export interface ReceiptProps {
   number: string
@@ -75,7 +76,10 @@ export function ReceiptDocument(props: ReceiptProps) {
           </View>
           {props.allocations.map((a) => (
             <View key={a.sequence} style={styles.tableRow}>
-              <Text style={styles.colSeq}>{a.sequence}</Text>
+              {/* A payment that settles the deposit says so. "0" in the
+                  applied-to column is the sequence number, not an amount, and
+                  reads on a receipt like a payment applied to nothing. */}
+              <Text style={styles.colSeq}>{scheduleEntryLabel(a.sequence)}</Text>
               <Text style={styles.colDate}>{date(a.dueDate)}</Text>
               <Text style={styles.colAmount}>{formatMinor(a.amountMinor, props.currency)}</Text>
             </View>

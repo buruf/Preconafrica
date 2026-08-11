@@ -1,6 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { formatMinor } from '@/domain/currency'
+import { DEPOSIT_SEQUENCE } from '@/domain/schedule'
 
 export interface InvoiceProps {
   number: string
@@ -13,7 +14,14 @@ export interface InvoiceProps {
   buyerEmail: string
   currency: string
   sequence: number
-  totalInstallments: number
+  /**
+   * The contract's term in months — the denominator of "installment 3 of 36".
+   * Not the number of schedule entries: a schedule with a deposit has one more
+   * row than the contract has months, which turned every invoice on a
+   * deposit-bearing sale into "3 of 37". Null for a full payment, which has no
+   * installments to count.
+   */
+  termMonths: number | null
   dueDate: Date
   amountDueMinor: bigint
   amountPaidMinor: bigint
@@ -23,6 +31,11 @@ const date = (d: Date) => d.toISOString().slice(0, 10)
 
 export function InvoiceDocument(props: InvoiceProps) {
   const outstanding = props.amountDueMinor - props.amountPaidMinor
+
+  // The deposit is a schedule entry like any other, so it gets invoiced like
+  // any other — but it is not installment zero of anything, and printing it
+  // that way makes a correct invoice look like a broken one.
+  const isDeposit = props.sequence === DEPOSIT_SEQUENCE
 
   return (
     <Document>
@@ -52,9 +65,13 @@ export function InvoiceDocument(props: InvoiceProps) {
             <Text>{props.unitName}</Text>
           </View>
           <View style={styles.row}>
-            <Text style={styles.label}>Installment</Text>
+            <Text style={styles.label}>{isDeposit ? 'Deposit' : 'Installment'}</Text>
             <Text>
-              {props.sequence} of {props.totalInstallments}
+              {isDeposit
+                ? 'Due at signing'
+                : props.termMonths === null
+                  ? 'Full payment'
+                  : `${props.sequence} of ${props.termMonths}`}
             </Text>
           </View>
           <View style={styles.row}>
@@ -65,7 +82,7 @@ export function InvoiceDocument(props: InvoiceProps) {
 
         <View style={styles.section}>
           <View style={styles.row}>
-            <Text>Installment amount</Text>
+            <Text>{isDeposit ? 'Deposit amount' : 'Installment amount'}</Text>
             <Text>{formatMinor(props.amountDueMinor, props.currency)}</Text>
           </View>
           <View style={styles.row}>

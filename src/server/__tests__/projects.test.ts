@@ -88,3 +88,45 @@ describe('UpdateUnitSchema price', () => {
     expect(UpdateUnitSchema.safeParse({}).success).toBe(true)
   })
 })
+
+describe('CreateProjectSchema — the installment charge', () => {
+  it('defaults to nothing when the field is blank or absent', () => {
+    // A project that charges nothing for installments is the ordinary case, so
+    // an untouched field must not be a validation error.
+    const { installmentMarkupPercent, ...withoutField } = { ...valid, installmentMarkupPercent: '' }
+    expect(CreateProjectSchema.safeParse(withoutField).success).toBe(true)
+    expect(CreateProjectSchema.safeParse({ ...valid, installmentMarkupPercent: '' }).success).toBe(
+      true
+    )
+  })
+
+  it('accepts a percentage with up to two decimal places', () => {
+    for (const percent of ['0', '10', '7.5', '12.25', '100']) {
+      expect(
+        CreateProjectSchema.safeParse({ ...valid, installmentMarkupPercent: percent }).success,
+        percent
+      ).toBe(true)
+    }
+  })
+
+  it('rejects a percentage basis points cannot hold exactly', () => {
+    // Two decimals is exactly the precision of a basis point. A third would
+    // have to be rounded, and a silently rounded rate is a contract that is
+    // wrong by a rounding error nobody agreed to.
+    for (const percent of ['7.555', '0.001', '-1', '101', '100.01', 'ten']) {
+      expect(
+        CreateProjectSchema.safeParse({ ...valid, installmentMarkupPercent: percent }).success,
+        percent
+      ).toBe(false)
+    }
+  })
+
+  it('names the offending field so the form can point at it', () => {
+    const result = CreateProjectSchema.safeParse({ ...valid, installmentMarkupPercent: '7.555' })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    expect(result.error.issues.some((issue) => issue.path[0] === 'installmentMarkupPercent')).toBe(
+      true
+    )
+  })
+})

@@ -112,6 +112,12 @@ model Project {
   unitsPerFloor          Int
   startFloor             Int               @default(1)
   namingPattern          String
+  /// The developer's default charge for paying by installments, in basis points
+  /// of the financed amount (price less deposit). 1000 = 10%. Basis points
+  /// rather than a decimal percentage so the charge is an exact integer and the
+  /// whole calculation can stay in BigInt. Int, not BigInt: this is a count of
+  /// hundredths of a percent, capped at 10000, never an amount of money.
+  installmentMarkupBps   Int               @default(0)
   reminderDaysBefore     Int               @default(7)
   overdueNoticeDaysAfter Int               @default(3)
   reminderChannels       ReminderChannel[] @default([EMAIL])
@@ -173,6 +179,10 @@ model Sale {
   /// Snapshot at signing. Repricing the unit must not alter a signed contract.
   priceMinor      BigInt
   depositMinor    BigInt     @default(0)
+  /// Snapshot at signing, for exactly the reason priceMinor is one: changing the
+  /// project's default markup must not silently reprice a contract someone has
+  /// already signed. Basis points of the financed amount; 0 for FULL plans.
+  markupBps       Int        @default(0)
   currency        String
   termMonths      Int?
   signedAt        DateTime
