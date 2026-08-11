@@ -80,6 +80,19 @@ export function UnitRow({
             View sale
           </Link>
         ) : null}
+
+        {/* The entry point to the whole staff sale flow. Staff sell and buyers
+            view, so an available unit is sold from the inventory it is listed
+            in. Both staff roles get the link — an agent selling units is the
+            job description, and createSale authorizes the write itself. */}
+        {unit.status === 'AVAILABLE' ? (
+          <Link
+            href={`/projects/${projectId}/sell/${unit.id}`}
+            className="inline-flex min-h-11 shrink-0 items-center text-sm font-medium underline"
+          >
+            Sell
+          </Link>
+        ) : null}
       </div>
 
       {editable && expanded ? (

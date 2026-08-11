@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { getProjectInventory } from '@/server/services/units'
 import { ServiceError } from '@/server/services/errors'
+import { bpsToPercentString } from '@/domain/schedule'
 import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { UnitRow } from './UnitRow'
@@ -28,7 +29,16 @@ export default async function ProjectPage({ params }: { params: { id: string } }
 
   return (
     <>
-      <PageHeader title={project.name} subtitle={project.location} />
+      <PageHeader
+        title={project.name}
+        // The installment rate belongs in the header because it is the figure
+        // every "Sell" on this page prefills. Visible only on the sale form, a
+        // project still sitting at 0% is noticed after a contract is signed at
+        // 0%, not before.
+        subtitle={`${project.location} · Installment charge ${bpsToPercentString(
+          project.installmentMarkupBps
+        )}%`}
+      />
 
       <div className="mb-5 grid grid-cols-3 gap-3">
         {[

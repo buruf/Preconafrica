@@ -57,6 +57,75 @@ export function totalScheduledMinor(entries: ScheduleEntryDraft[]): bigint {
 }
 
 /**
+ * How a schedule entry is named wherever a person reads one — a table row, a
+ * PDF column, an invoice heading.
+ *
+ * The deposit is sequence 0, which is a correct number and a terrible label:
+ * "0." above the signing-day amount reads like a placeholder or a bug, and on
+ * an invoice "installment 0 of 36" reads like a mistake in the contract. One
+ * function rather than a ternary at each of the six call sites, so the deposit
+ * cannot end up called "Deposit" on the dashboard and "0" on the statement.
+ */
+export function scheduleEntryLabel(sequence: number): string {
+  return sequence === DEPOSIT_SEQUENCE ? 'Deposit' : String(sequence)
+}
+
+/**
+ * Percent-as-typed to basis points, exactly.
+ *
+ * Staff think in percent ("10%", "7.5%"); the money core thinks in basis
+ * points, because an integer is the only representation of a rate that cannot
+ * lose a hundredth to a binary fraction. Two decimal places is exactly the
+ * precision basis points can hold, so a third decimal is rejected rather than
+ * silently rounded — "7.555%" quietly becoming 755 bps is the kind of thing
+ * nobody notices until a contract is short by a rounding error.
+ *
+ * Parsed from the string the form submitted, never from a `number`: 10.15
+ * multiplied by 100 is 1014.9999999999999 in IEEE-754, which is precisely the
+ * bug this whole basis-point scheme exists to avoid.
+ */
+export function percentToBps(percent: string): number {
+  const cleaned = percent.replace(/[\s,_%]/g, '')
+  const match = /^(\d+)(?:\.(\d+))?$/.exec(cleaned)
+  if (!match) {
+    throw new ScheduleError('Enter the installment charge as a percentage, e.g. 10 or 7.5')
+  }
+
+  const [, whole, fraction = ''] = match
+  if (fraction.length > 2) {
+    throw new ScheduleError('An installment charge may have at most two decimal places')
+  }
+
+  // Digit arithmetic, not `Number(cleaned) * 100`: the operands here are the
+  // integers the string literally contains, so the result is exact.
+  const bps = Number(whole) * 100 + Number(fraction.padEnd(2, '0') || '0')
+  if (!Number.isInteger(bps) || bps < 0 || bps > MAX_MARKUP_BPS) {
+    throw new ScheduleError(
+      `The installment charge must be between 0% and ${MAX_MARKUP_BPS / 100}%`
+    )
+  }
+
+  return bps
+}
+
+/**
+ * Basis points back to the shortest exact percentage string: 1000 -> "10",
+ * 1050 -> "10.5", 1025 -> "10.25", 0 -> "0". Used to prefill the percent input
+ * from a stored rate, so `percentToBps(bpsToPercentString(x)) === x` for every
+ * x in range — an admin who opens a form and saves it unchanged must not
+ * re-rate the project.
+ */
+export function bpsToPercentString(bps: number): string {
+  assertMarkupBps(bps)
+
+  const whole = Math.trunc(bps / 100)
+  const fraction = bps % 100
+  if (fraction === 0) return String(whole)
+
+  return `${whole}.${String(fraction).padStart(2, '0').replace(/0$/, '')}`
+}
+
+/**
  * The installment charge, in minor units, on a financed amount.
  *
  * Basis points rather than a percentage float: 10% is the integer 1000, so the

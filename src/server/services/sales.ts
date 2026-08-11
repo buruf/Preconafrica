@@ -64,6 +64,26 @@ export const PlanSelectionSchema = z
 // staff-only override at createSale. Accepting it from this form-facing schema
 // would let a buyer post markupBps=0 and waive their own fee.
 
+/**
+ * The staff override as it travels from the sell form, through the confirm
+ * URL, to the create action: an optional whole number of basis points.
+ *
+ * Kept out of `PlanSelectionSchema` on purpose. That schema parses what a
+ * buyer-shaped form submits; this one is only ever parsed on pages behind
+ * `requireStaff()`, and `resolveMarkupBps` discards the value anyway for a
+ * BUYER actor. Absent — a blank input, a missing query param — means "use the
+ * project default", which is exactly what an undefined override resolves to.
+ */
+export const MarkupOverrideSchema = z.preprocess(
+  (value) => (value === '' || value === null ? undefined : value),
+  z.coerce
+    .number()
+    .int('The installment charge must be a whole number of basis points')
+    .min(0)
+    .max(MAX_MARKUP_BPS)
+    .optional()
+)
+
 export interface SchedulePreview {
   entries: ScheduleEntryDraft[]
   totalMinor: bigint
@@ -231,8 +251,13 @@ export async function registerBuyer(orgId: string, input: BuyerRegistrationInput
  *     charge for — the same normalisation `PlanSelectionSchema` applies to the
  *     deposit. Without it, every full-payment sale on a project that charges a
  *     markup would die on `generateSchedule`'s FULL-plan guard.
+ *
+ * Exported for the tests rather than for any caller: rule 1 is a security
+ * control, and a security control that is only reachable through a function
+ * needing a live Unit, Buyer and transaction is a security control nobody
+ * tests. `createSale` remains its only production caller.
  */
-function resolveMarkupBps(
+export function resolveMarkupBps(
   actor: SessionActor,
   input: { planType: PlanType; markupBps?: number },
   projectDefaultBps: number
@@ -358,6 +383,23 @@ export async function getSaleForStaff(actor: SessionActor, saleId: string) {
   })
   if (!sale) throw new ServiceError('Sale not found', 'NOT_FOUND')
   return sale
+}
+
+/**
+ * Every buyer of the actor's organisation, for the "sell to an existing buyer"
+ * picker on the staff sale form.
+ *
+ * Staff-only and org-scoped: the list names people, and one developer's client
+ * roster must never be selectable from another's form. Returns only what the
+ * option label needs — no address, no email, and nothing about their sales.
+ */
+export async function listBuyers(actor: SessionActor) {
+  assertRole(actor, ['ADMIN', 'AGENT'])
+  return prisma.buyer.findMany({
+    where: { orgId: actor.orgId },
+    orderBy: { fullName: 'asc' },
+    select: { id: true, fullName: true, phone: true }
+  })
 }
 
 export async function getSaleForBuyer(actor: SessionActor & { buyerId: string }) {

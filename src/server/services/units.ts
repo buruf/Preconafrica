@@ -46,6 +46,13 @@ export interface ProjectInventory {
     currency: string
     expectedCompletion: Date
     namingPattern: string
+    /**
+     * The project's default installment charge. Carried so the inventory page
+     * can state the rate a "Sell" from one of these rows will default to;
+     * otherwise the only place it is ever visible is the sale form itself,
+     * which is too late for staff to notice a project is still set to 0%.
+     */
+    installmentMarkupBps: number
   }
   floors: Array<{ floor: number; units: InventoryUnit[]; available: number; total: number }>
   totals: { total: number; available: number; reserved: number; sold: number }
@@ -101,7 +108,8 @@ export async function getProjectInventory(
       location: project.location,
       currency: project.currency,
       expectedCompletion: project.expectedCompletion,
-      namingPattern: project.namingPattern
+      namingPattern: project.namingPattern,
+      installmentMarkupBps: project.installmentMarkupBps
     },
     floors,
     totals: {
