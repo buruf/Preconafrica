@@ -1,12 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { BuyerRegistrationSchema, PlanSelectionSchema, createSale, previewSchedule, summariseSale } from '@/server/services/sales'
+import {
+  BuyerRegistrationSchema,
+  MarkupOverrideSchema,
+  PlanSelectionSchema,
+  createSale,
+  previewSchedule,
+  resolveMarkupBps,
+  summariseSale
+} from '@/server/services/sales'
 import { buildArrearsRows } from '@/server/services/arrears'
 import { constraintTargetIncludes } from '@/server/services/units'
+import { ServiceError } from '@/server/services/errors'
 import { AuthorizationError, type SessionActor } from '@/server/session'
-import { ScheduleError, generateSchedule } from '@/domain/schedule'
+import { MAX_MARKUP_BPS, ScheduleError, generateSchedule, type PlanType } from '@/domain/schedule'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 const day = (d: Date) => d.toISOString().slice(0, 10)
+/** JSON.stringify refuses BigInt outright, and these failure labels carry money. */
+const bigintReplacer = (_key: string, value: unknown) =>
+  typeof value === 'bigint' ? value.toString() : value
 
 describe('BuyerRegistrationSchema', () => {
   const valid = {
@@ -487,5 +499,227 @@ describe('PlanSelectionSchema normalisation', () => {
         termMonths: '0'
       }).success
     ).toBe(false)
+  })
+})
+
+describe('resolveMarkupBps', () => {
+  // The installment charge is the developer's revenue. Who may set it is a
+  // security control, and this is the only place it is decided — so it is
+  // tested directly rather than through createSale, which needs a live Unit,
+  // Buyer and transaction before it reaches this line.
+  const actor = (role: SessionActor['role']): SessionActor => ({
+    userId: `user_${role.toLowerCase()}`,
+    orgId: 'org_1',
+    role,
+    buyerId: role === 'BUYER' ? 'buyer_1' : null,
+    fullName: 'Test Actor',
+    email: 'actor@example.com'
+  })
+
+  const PROJECT_DEFAULT = 1_000
+
+  const cases: Array<{
+    label: string
+    role: SessionActor['role']
+    planType: PlanType
+    markupBps?: number
+    expected: number
+  }> = [
+    {
+      // The attack this rule exists for: a buyer posting a forged markupBps=0
+      // to waive the fee they were quoted. It is discarded, not honoured.
+      label: 'a BUYER supplying 0 gets the project default anyway',
+      role: 'BUYER',
+      planType: 'INSTALLMENTS',
+      markupBps: 0,
+      expected: PROJECT_DEFAULT
+    },
+    {
+      label: 'a BUYER cannot raise it either',
+      role: 'BUYER',
+      planType: 'INSTALLMENTS',
+      markupBps: 5_000,
+      expected: PROJECT_DEFAULT
+    },
+    {
+      label: 'an ADMIN may override it',
+      role: 'ADMIN',
+      planType: 'INSTALLMENTS',
+      markupBps: 250,
+      expected: 250
+    },
+    {
+      label: 'an ADMIN may override it down to zero',
+      role: 'ADMIN',
+      planType: 'INSTALLMENTS',
+      markupBps: 0,
+      expected: 0
+    },
+    {
+      label: 'an AGENT may override it',
+      role: 'AGENT',
+      planType: 'INSTALLMENTS',
+      markupBps: 750,
+      expected: 750
+    },
+    {
+      label: 'an AGENT supplying nothing gets the project default',
+      role: 'AGENT',
+      planType: 'INSTALLMENTS',
+      markupBps: undefined,
+      expected: PROJECT_DEFAULT
+    },
+    {
+      label: 'an ADMIN supplying nothing gets the project default',
+      role: 'ADMIN',
+      planType: 'INSTALLMENTS',
+      markupBps: undefined,
+      expected: PROJECT_DEFAULT
+    },
+    // Nothing is financed on a full payment, so there is nothing to charge for
+    // — including when the project default would otherwise apply, which would
+    // die on generateSchedule's FULL-plan guard.
+    {
+      label: 'a FULL plan is free of charge whatever staff ask for',
+      role: 'ADMIN',
+      planType: 'FULL',
+      markupBps: 5_000,
+      expected: 0
+    },
+    {
+      label: 'a FULL plan ignores the project default too',
+      role: 'AGENT',
+      planType: 'FULL',
+      markupBps: undefined,
+      expected: 0
+    },
+    {
+      label: "a FULL plan ignores a buyer's value as well",
+      role: 'BUYER',
+      planType: 'FULL',
+      markupBps: 900,
+      expected: 0
+    }
+  ]
+
+  for (const { label, role, planType, markupBps, expected } of cases) {
+    it(label, () => {
+      expect(
+        resolveMarkupBps(actor(role), { planType, markupBps }, PROJECT_DEFAULT)
+      ).toBe(expected)
+    })
+  }
+
+  const rejected: Array<[string, number]> = [
+    ['a negative rate', -1],
+    ['a rate above 100%', MAX_MARKUP_BPS + 1],
+    ['a percentage mistaken for basis points', 12.5],
+    ['a fractional basis point', 1_000.5],
+    ['NaN', Number.NaN]
+  ]
+
+  for (const [label, markupBps] of rejected) {
+    it(`rejects ${label} from staff as a validation error, not a raw ScheduleError`, () => {
+      // Caught here rather than left to generateSchedule so a staff typo comes
+      // back as a message on the sale form.
+      expect(() =>
+        resolveMarkupBps(actor('ADMIN'), { planType: 'INSTALLMENTS', markupBps }, PROJECT_DEFAULT)
+      ).toThrow(ServiceError)
+    })
+  }
+
+  it('does not let a buyer smuggle an out-of-range rate past the check', () => {
+    // The value is discarded before it is validated, so a hostile one cannot
+    // even be used to force an error — the sale prices at the project default.
+    expect(
+      resolveMarkupBps(actor('BUYER'), { planType: 'INSTALLMENTS', markupBps: -1 }, PROJECT_DEFAULT)
+    ).toBe(PROJECT_DEFAULT)
+  })
+
+  it('rejects a project default that is itself out of range', () => {
+    expect(() =>
+      resolveMarkupBps(actor('AGENT'), { planType: 'INSTALLMENTS' }, MAX_MARKUP_BPS + 1)
+    ).toThrow(ServiceError)
+  })
+})
+
+describe('the previewed charge and the previewed entries cannot desync', () => {
+  // The confirm page prints `markupMinor` as its own consent line and the
+  // entries as the schedule below it. They are computed by different
+  // expressions, so a change to one could silently stop describing the other:
+  // this asserts the invariant that ties them together — the entries sum to
+  // exactly the price plus the quoted charge, and nothing else.
+  const combinations: Array<{ priceMinor: bigint; depositMinor: bigint; months: number; markupBps: number }> = []
+  for (const priceMinor of [100_000n, 145_000_000n, 25_000_000_001n]) {
+    for (const depositMinor of [0n, 1n, 20_000n]) {
+      for (const months of [1, 12, 36, 37]) {
+        for (const markupBps of [0, 1, 500, 1_000, 3_333, MAX_MARKUP_BPS]) {
+          combinations.push({ priceMinor, depositMinor, months, markupBps })
+        }
+      }
+    }
+  }
+
+  it(`holds across ${combinations.length} price x deposit x term x rate combinations`, () => {
+    for (const combination of combinations) {
+      const preview = previewSchedule({
+        planType: 'INSTALLMENTS',
+        signedAt: utc(2026, 8, 9),
+        ...combination
+      })
+
+      const summed = preview.entries.reduce((total, entry) => total + entry.amountDueMinor, 0n)
+
+      // The quoted charge is exactly the residue between the price and what the
+      // schedule actually asks for. If someone changed how the entries amortize
+      // without changing the quote, this is what fails.
+      expect(preview.markupMinor, JSON.stringify(combination, bigintReplacer)).toBe(
+        summed - combination.priceMinor
+      )
+      expect(preview.totalMinor).toBe(summed)
+      expect(preview.totalMinor).toBe(combination.priceMinor + preview.markupMinor)
+
+      // And the deposit is never marked up: whatever the rate, the signing-day
+      // entry is the agreed deposit to the minor unit.
+      if (combination.depositMinor > 0n) {
+        expect(preview.entries[0].amountDueMinor).toBe(combination.depositMinor)
+      }
+    }
+  })
+
+  it('quotes no charge on a full payment, whose single entry is the price', () => {
+    const preview = previewSchedule({
+      planType: 'FULL',
+      priceMinor: 145_000_000n,
+      depositMinor: 0n,
+      markupBps: 0,
+      months: 0,
+      signedAt: utc(2026, 8, 9)
+    })
+    expect(preview.markupMinor).toBe(0n)
+    expect(preview.totalMinor).toBe(145_000_000n)
+  })
+})
+
+describe('MarkupOverrideSchema', () => {
+  // This is what a URL query param and a hidden form field are parsed through
+  // on their way to createSale, so it has to distinguish "not set" from "zero".
+  it('reads an absent override as undefined, not as zero', () => {
+    for (const value of [undefined, null, '']) {
+      const parsed = MarkupOverrideSchema.parse(value)
+      expect(parsed, String(value)).toBeUndefined()
+    }
+  })
+
+  it('reads a supplied override as a number of basis points', () => {
+    expect(MarkupOverrideSchema.parse('1000')).toBe(1_000)
+    expect(MarkupOverrideSchema.parse('0')).toBe(0)
+    expect(MarkupOverrideSchema.parse(String(MAX_MARKUP_BPS))).toBe(MAX_MARKUP_BPS)
+  })
+
+  it('refuses anything a schedule could not be built from', () => {
+    for (const value of ['-1', String(MAX_MARKUP_BPS + 1), '12.5', 'ten']) {
+      expect(MarkupOverrideSchema.safeParse(value).success, value).toBe(false)
+    }
   })
 })

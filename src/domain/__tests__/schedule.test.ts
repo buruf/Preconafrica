@@ -4,8 +4,11 @@ import {
   DEPOSIT_SEQUENCE,
   MAX_MARKUP_BPS,
   ScheduleError,
+  bpsToPercentString,
   computeMarkupMinor,
   generateSchedule,
+  percentToBps,
+  scheduleEntryLabel,
   totalScheduledMinor
 } from '@/domain/schedule'
 
@@ -453,4 +456,96 @@ describe('generateSchedule — rejected input', () => {
       expect(() => generateSchedule(input)).toThrow(ScheduleError)
     })
   }
+})
+
+describe('scheduleEntryLabel', () => {
+  it('names the deposit rather than numbering it', () => {
+    expect(scheduleEntryLabel(DEPOSIT_SEQUENCE)).toBe('Deposit')
+  })
+
+  it('leaves every monthly installment as its own number', () => {
+    for (const sequence of [1, 2, 12, 36, 360]) {
+      expect(scheduleEntryLabel(sequence)).toBe(String(sequence))
+    }
+  })
+})
+
+describe('percentToBps', () => {
+  const cases: Array<[string, number]> = [
+    ['0', 0],
+    ['10', 1_000],
+    ['7.5', 750],
+    ['7.50', 750],
+    ['10.25', 1_025],
+    ['0.01', 1],
+    ['0.1', 10],
+    ['100', MAX_MARKUP_BPS],
+    ['100.00', MAX_MARKUP_BPS],
+    // Typed the way a person types it, rather than the way a parser wants it.
+    [' 10 ', 1_000],
+    ['10%', 1_000],
+    ['012.5', 1_250]
+  ]
+
+  for (const [input, expected] of cases) {
+    it(`reads "${input}" as ${expected} bps`, () => {
+      expect(percentToBps(input)).toBe(expected)
+    })
+  }
+
+  const rejected = [
+    // Three decimals cannot be held exactly in basis points. Rounding it
+    // silently is how a contract ends up a rounding error short.
+    '7.555',
+    '10.001',
+    '-5',
+    '100.01',
+    '101',
+    '',
+    'ten',
+    '1e3',
+    '.5',
+    '5.',
+    '1/2'
+  ]
+
+  for (const input of rejected) {
+    it(`rejects "${input}"`, () => {
+      expect(() => percentToBps(input)).toThrow(ScheduleError)
+    })
+  }
+
+  it('never routes a percentage through a float', () => {
+    // 10.15 * 100 is 1014.9999999999999 in IEEE-754. Parsing the digits gives
+    // the integer the string actually names — this test is the reason the
+    // function reads a string rather than taking a number.
+    expect(percentToBps('10.15')).toBe(1_015)
+    expect(percentToBps('3.35')).toBe(335)
+    expect(percentToBps('8.29')).toBe(829)
+  })
+})
+
+describe('bpsToPercentString', () => {
+  it('prints the shortest exact percentage', () => {
+    expect(bpsToPercentString(0)).toBe('0')
+    expect(bpsToPercentString(1_000)).toBe('10')
+    expect(bpsToPercentString(1_050)).toBe('10.5')
+    expect(bpsToPercentString(1_025)).toBe('10.25')
+    expect(bpsToPercentString(5)).toBe('0.05')
+    expect(bpsToPercentString(MAX_MARKUP_BPS)).toBe('100')
+  })
+
+  it('round-trips every rate a project can hold', () => {
+    // An admin who opens a form prefilled from a stored rate and saves it
+    // unchanged must not re-rate the project by a hundredth of a percent.
+    for (let bps = 0; bps <= MAX_MARKUP_BPS; bps += 1) {
+      expect(percentToBps(bpsToPercentString(bps))).toBe(bps)
+    }
+  })
+
+  it('refuses a rate outside the range a schedule accepts', () => {
+    expect(() => bpsToPercentString(-1)).toThrow(ScheduleError)
+    expect(() => bpsToPercentString(MAX_MARKUP_BPS + 1)).toThrow(ScheduleError)
+    expect(() => bpsToPercentString(10.5)).toThrow(ScheduleError)
+  })
 })
