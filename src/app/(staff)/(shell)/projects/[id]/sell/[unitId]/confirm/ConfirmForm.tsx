@@ -38,7 +38,9 @@ export function ConfirmForm({
   termMonths: number
   markupBps: number | null
 }) {
-  const [error, formAction] = useFormState(createStaffSaleAction, undefined)
+  // Bound to the route's unit so a tampered hidden field cannot sign this
+  // page's quoted terms against a different unit — the action cross-checks.
+  const [error, formAction] = useFormState(createStaffSaleAction.bind(null, unitId), undefined)
 
   return (
     <form action={formAction} className="space-y-3">

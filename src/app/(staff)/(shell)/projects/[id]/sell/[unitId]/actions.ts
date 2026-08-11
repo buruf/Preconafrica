@@ -114,11 +114,20 @@ export async function previewSaleAction(
 }
 
 /** Step 2: the only write. Claims the unit, signs the contract, issues the statement. */
-export async function createStaffSaleAction(_prev: string | undefined, formData: FormData) {
+export async function createStaffSaleAction(
+  unitId: string,
+  _prev: string | undefined,
+  formData: FormData
+) {
   const actor = await requireStaff()
 
   const plan = PlanSelectionSchema.safeParse(Object.fromEntries(formData))
   if (!plan.success) return plan.error.issues[0]?.message ?? 'Please check the payment plan.'
+
+  // The unit is bound from the route (same as previewSaleAction), not the form:
+  // the confirm page quoted terms for THIS unit, so an edited hidden field must
+  // not be able to sign those terms against a different one.
+  if (plan.data.unitId !== unitId) return 'This confirmation is for a different unit.'
 
   const markup = MarkupOverrideSchema.safeParse(formData.get('markupBps'))
   if (!markup.success) {
@@ -135,7 +144,7 @@ export async function createStaffSaleAction(_prev: string | undefined, formData:
   try {
     const result = await createSale(actor, {
       buyerId,
-      unitId: plan.data.unitId,
+      unitId,
       planType: plan.data.planType,
       deposit: plan.data.deposit,
       termMonths: plan.data.termMonths,
