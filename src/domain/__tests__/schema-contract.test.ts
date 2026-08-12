@@ -96,6 +96,32 @@ describe('schema contract', () => {
     expect(schema).not.toMatch(/currency\s+String\s+@default/)
   })
 
+  it('keeps every image URL optional, so a missing image is never a broken page', () => {
+    // The imagery contract in one rule: a single image is `String?`, a list of
+    // them is `String[]`, and neither carries a default. Both halves matter.
+    //
+    // Nullable/empty is what makes the placeholder the *normal* state rather
+    // than an error state — every display site branches on it, and a
+    // `String @default("")` would put a falsy non-null value in the column that
+    // some of those branches would render as a broken image instead. A list with
+    // no default is an empty array on every pre-existing row, which is why
+    // `renderImageUrls` could be added to a live, seeded database with no
+    // backfill step at all.
+    const singles = schema.match(/^\s*\w*(?:[Ii]mageUrl|logoUrl)\s+\S+.*$/gm) ?? []
+    expect(singles.length).toBeGreaterThan(0)
+    for (const field of singles) {
+      expect(field, `${field.trim()} must be an optional String`).toMatch(/\bString\?/)
+      expect(field, `${field.trim()} must not carry a default`).not.toMatch(/@default/)
+    }
+
+    const lists = schema.match(/^\s*\w*[Ii]mageUrls\s+\S+.*$/gm) ?? []
+    expect(lists.length).toBeGreaterThan(0)
+    for (const field of lists) {
+      expect(field, `${field.trim()} must be a String[]`).toMatch(/\bString\[\]/)
+      expect(field, `${field.trim()} must not carry a default`).not.toMatch(/@default/)
+    }
+  })
+
   it('never lets a Cascade delete reach Sale, Payment, PaymentAllocation, Document, or ScheduleEntry', () => {
     // These five models hold money movements, the audit trail of money movements, or
     // (ScheduleEntry) the agreed payment schedule itself — amountDueMinor/amountPaidMinor.

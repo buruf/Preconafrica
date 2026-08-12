@@ -80,18 +80,18 @@ model Organization {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  orgId        String
-  email        String   @unique
-  passwordHash String
-  fullName     String
-  role         UserRole
+  id                String    @id @default(cuid())
+  orgId             String
+  email             String    @unique
+  passwordHash      String
+  fullName          String
+  role              UserRole
   /// Set when the account is deactivated, and the authoritative answer to
   /// "may this user act?". Read on every authenticated request (requireUser)
   /// so an already-issued JWT stops working the moment an admin deactivates
   /// the account — overwriting the password hash alone only blocks future
   /// logins and leaves the existing session valid until it expires.
-  disabledAt   DateTime?
+  disabledAt        DateTime?
   /// Stamped every time the password changes — by self-service change or by
   /// reset. A JWT cannot be revoked from the outside, so this field is what
   /// revokes one: `requireUser` compares it against the token's `iat` on every
@@ -101,7 +101,7 @@ model User {
   /// hold valid for up to a week — the opposite of what a reset is for. Null
   /// means the password has never changed, so no session can predate a change.
   passwordChangedAt DateTime?
-  createdAt    DateTime @default(now())
+  createdAt         DateTime  @default(now())
 
   org                 Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
   buyer               Buyer?
@@ -150,6 +150,14 @@ model Project {
   unitsPerFloor          Int
   startFloor             Int               @default(1)
   namingPattern          String
+  /// The building's photo, as an `https` URL an admin pasted. Nullable, and
+  /// nullable is the ordinary case: a project with no photo shows a labelled
+  /// placeholder wherever the photo would go, so nothing about a page's or a
+  /// PDF's layout depends on one being set. There is deliberately no upload
+  /// pipeline behind this (no blob storage, no new service, no cost) — the URL
+  /// is checked by `checkImageUrl` at input time and re-checked by the
+  /// server-side SSRF guard before any PDF embeds it.
+  heroImageUrl           String?
   /// The developer's default charge for paying by installments, in basis points
   /// of the financed amount (price less deposit). 1000 = 10%. Basis points
   /// rather than a decimal percentage so the charge is an exact integer and the
@@ -169,16 +177,26 @@ model Project {
 }
 
 model Unit {
-  id         String     @id @default(cuid())
-  projectId  String
-  name       String
-  floor      Int
-  bedrooms   Int
-  sizeSqm    Decimal    @db.Decimal(10, 2)
+  id              String     @id @default(cuid())
+  projectId       String
+  name            String
+  floor           Int
+  bedrooms        Int
+  sizeSqm         Decimal    @db.Decimal(10, 2)
   /// Minor units. BigInt because a NGN tower unit overflows Int32.
-  priceMinor BigInt
-  status     UnitStatus @default(AVAILABLE)
-  createdAt  DateTime   @default(now())
+  priceMinor      BigInt
+  status          UnitStatus @default(AVAILABLE)
+  /// The floor-plan drawing for this unit — one image, same rules as
+  /// `Project.heroImageUrl`.
+  layoutImageUrl  String?
+  /// Artist's impressions, several per unit, in the order an admin listed them.
+  /// A list rather than a join table because these are ordered opaque strings
+  /// with nothing hanging off them, and `String[]` with no default is an empty
+  /// array on every existing row — so the column arrives without a backfill.
+  /// Capped at MAX_RENDER_IMAGES by `parseRenderUrls` at input time; the
+  /// database does not enforce a length, so the guard is the cap.
+  renderImageUrls String[]
+  createdAt       DateTime   @default(now())
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   sale    Sale?
@@ -242,15 +260,15 @@ model Sale {
 }
 
 model ScheduleEntry {
-  id             String    @id @default(cuid())
-  saleId         String
-  sequence       Int
-  dueDate        DateTime
-  amountDueMinor BigInt
+  id              String    @id @default(cuid())
+  saleId          String
+  sequence        Int
+  dueDate         DateTime
+  amountDueMinor  BigInt
   /// Maintained transactionally as the sum of this entry's allocations.
   /// Status is NOT stored — it is derived from this plus the current date.
-  amountPaidMinor BigInt   @default(0)
-  paidAt         DateTime?
+  amountPaidMinor BigInt    @default(0)
+  paidAt          DateTime?
 
   sale          Sale                @relation(fields: [saleId], references: [id], onDelete: Restrict)
   allocations   PaymentAllocation[]

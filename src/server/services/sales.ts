@@ -364,8 +364,23 @@ export async function createSale(
 }
 
 const saleInclude = {
-  unit: { select: { id: true, name: true, floor: true, bedrooms: true, sizeSqm: true } },
-  project: { select: { id: true, name: true, location: true, currency: true } },
+  unit: {
+    select: {
+      id: true,
+      name: true,
+      floor: true,
+      bedrooms: true,
+      sizeSqm: true,
+      // What the buyer is actually buying, as a picture. Selected here rather
+      // than fetched per page, so the staff sale page and the buyer dashboard
+      // show the same imagery out of the same query.
+      layoutImageUrl: true,
+      renderImageUrls: true
+    }
+  },
+  project: {
+    select: { id: true, name: true, location: true, currency: true, heroImageUrl: true }
+  },
   buyer: { select: { id: true, fullName: true, phone: true, email: true, address: true } },
   scheduleEntries: { orderBy: { sequence: 'asc' } },
   payments: {

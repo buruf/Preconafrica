@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
+import { ImageUrlField, RenderUrlsField } from '@/server/services/media'
 import { toMinor } from '@/domain/currency'
 
 /**
@@ -28,6 +29,10 @@ export interface InventoryUnit {
   sizeSqm: string
   priceMinor: bigint
   status: UnitStatus
+  /** The floor plan, or null — the row shows a thumbnail only when it is set. */
+  layoutImageUrl: string | null
+  /** Artist's impressions, in the admin's order. Empty is the common case. */
+  renderImageUrls: string[]
   /**
    * The sale that claimed this unit, or null while no sale references it.
    * Carried so an inventory row can link straight to its sale: before this,
@@ -46,6 +51,8 @@ export interface ProjectInventory {
     currency: string
     expectedCompletion: Date
     namingPattern: string
+    /** The building photo, for the banner at the top of the inventory page. */
+    heroImageUrl: string | null
     /**
      * The project's default installment charge. Carried so the inventory page
      * can state the rate a "Sell" from one of these rows will default to;
@@ -87,6 +94,8 @@ export async function getProjectInventory(
       sizeSqm: unit.sizeSqm.toString(),
       priceMinor: unit.priceMinor,
       status: unit.status,
+      layoutImageUrl: unit.layoutImageUrl,
+      renderImageUrls: unit.renderImageUrls,
       saleId: unit.sale?.id ?? null
     }
     byFloor.set(unit.floor, [...(byFloor.get(unit.floor) ?? []), entry])
@@ -109,6 +118,7 @@ export async function getProjectInventory(
       currency: project.currency,
       expectedCompletion: project.expectedCompletion,
       namingPattern: project.namingPattern,
+      heroImageUrl: project.heroImageUrl,
       installmentMarkupBps: project.installmentMarkupBps
     },
     floors,
@@ -125,7 +135,14 @@ export const UpdateUnitSchema = z.object({
   name: z.string().min(1).max(40).optional(),
   bedrooms: z.coerce.number().int().min(0).max(10).optional(),
   sizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE).optional(),
-  price: z.string().regex(PRICE_PATTERN, 'Invalid amount').optional()
+  price: z.string().regex(PRICE_PATTERN, 'Invalid amount').optional(),
+  // Both `.optional()`, and both able to parse to an *empty* value: absent means
+  // "the form did not carry this field, leave the column alone", while present
+  // and blank means "clear it" — null for the layout, [] for the renders. The
+  // action reads them with `imageFieldFrom`, which is what preserves that
+  // distinction across the FormData boundary.
+  layoutImageUrl: ImageUrlField.optional(),
+  renderImageUrls: RenderUrlsField.optional()
 })
 
 export async function updateUnit(
@@ -145,6 +162,10 @@ export async function updateUnit(
   if (patch.name !== undefined) data.name = patch.name
   if (patch.bedrooms !== undefined) data.bedrooms = patch.bedrooms
   if (patch.sizeSqm !== undefined) data.sizeSqm = patch.sizeSqm
+  // null here is a real value, not an absence — it is how the URL is cleared —
+  // so the guard is `!== undefined`, never a truthiness check.
+  if (patch.layoutImageUrl !== undefined) data.layoutImageUrl = patch.layoutImageUrl
+  if (patch.renderImageUrls !== undefined) data.renderImageUrls = patch.renderImageUrls
   if (patch.price !== undefined) {
     // Repricing affects new sales only — existing Sale rows hold their own
     // snapshot and are untouched by this. The schema only checked numeric
