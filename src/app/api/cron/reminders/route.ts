@@ -1,8 +1,17 @@
 import { NextResponse } from 'next/server'
 import { runReminderSweep } from '@/server/notifications/reminders'
+import { purgeDeadResetTokens } from '@/server/services/passwords'
 
 export const runtime = 'nodejs'
 
+// This route is the app's daily housekeeping job, not only the reminder sweep.
+// It also reaps spent and expired password-reset tokens, which nothing else
+// deletes. That lives here rather than behind its own route and schedule
+// because it is two seconds of work once a day, it needs exactly the same
+// CRON_SECRET guard, and a second cron entry is a second thing to configure,
+// forget, and discover unconfigured a year later. The name stays for the
+// deploy config that already points at it; the tally reports both.
+//
 // A sweep queries every ACTIVE sale's schedule entries and dispatches a
 // notification per due job — more work than the single-document PDF render
 // (which needed 15s), so this gets a larger allowance. 60s is Vercel's cron
@@ -20,6 +29,9 @@ export async function GET(request: Request) {
     return new NextResponse('Unauthorized', { status: 401 })
   }
 
-  const tally = await runReminderSweep(new Date())
-  return NextResponse.json({ ok: true, ...tally })
+  const now = new Date()
+  const tally = await runReminderSweep(now)
+  const resetTokensPurged = await purgeDeadResetTokens(now)
+
+  return NextResponse.json({ ok: true, ...tally, resetTokensPurged })
 }
