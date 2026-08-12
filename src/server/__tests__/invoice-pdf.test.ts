@@ -86,7 +86,9 @@ const BASE: InvoiceProps = {
   number: 'INV-000042',
   issuedAt: new Date('2026-08-12T09:30:00Z'),
   orgName: 'Sunrise Developments',
-  logoUrl: null,
+  // No logo set, so the masthead prints the initials placeholder ('SD', asserted
+  // below). Bytes, never a URL — nothing inside a render may touch the network.
+  logo: null,
   projectName: 'Riverside Court',
   projectLocation: 'Riverside Drive, Nairobi',
   unitName: '4C',

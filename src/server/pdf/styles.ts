@@ -71,9 +71,45 @@ export const styles = StyleSheet.create({
     marginRight: 12
   },
   logoInitials: { fontSize: 15, fontFamily: 'Helvetica-Bold', color: FAINT, letterSpacing: 1 },
+  /**
+   * The real logo, in the same slot the initials occupy — inset a point on each
+   * side so the mark never touches the border, and `contain` rather than `cover`
+   * because a logo cropped to a square is a damaged logo.
+   */
+  logoImage: { width: 44, height: 44, objectFit: 'contain' },
   mastheadMeta: { alignItems: 'flex-end' },
   docNumber: { fontSize: 11, fontFamily: 'Helvetica-Bold', letterSpacing: 0.6, marginTop: 2 },
   accentRule: { height: 2, backgroundColor: ACCENT, marginTop: 10, marginBottom: 18 },
+
+  // ── Building photo band ───────────────────────────────────────────────────
+  /**
+   * The statement's building photo, under the masthead. A fixed height with the
+   * width left to the flex parent, so a developer's photo of any ratio occupies
+   * exactly the same band and the page below it never moves — and so the
+   * placeholder, which has no intrinsic size at all, occupies it too.
+   *
+   * 110pt is about 1/7 of an A4 page: enough that a buyer recognises the
+   * building, small enough that the schedule still starts on page one.
+   */
+  heroBand: {
+    height: 110,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: RULE,
+    borderRadius: 3,
+    backgroundColor: WASH,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden'
+  },
+  heroImage: { width: '100%', height: 110, objectFit: 'cover' },
+  /** The label a reader sees when no photo is set, or none could be fetched. */
+  heroPlaceholder: {
+    fontSize: 9,
+    fontFamily: 'Helvetica-Bold',
+    letterSpacing: 1,
+    color: FAINT
+  },
 
   // ── Blocks ────────────────────────────────────────────────────────────────
   /** Small, spaced, grey: reads as a heading without needing a second size up. */

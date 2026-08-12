@@ -8,6 +8,7 @@ import { StatementDocument } from '@/server/pdf/StatementDocument'
 import { deriveStatus } from '@/domain/status'
 import { computeMarkupMinor } from '@/domain/schedule'
 import { summariseSale } from '@/server/services/sales'
+import { fetchGuardedImages, toPdfImage } from '@/server/media/images'
 
 /**
  * Bytes are regenerated on demand rather than stored: payments are immutable
@@ -50,6 +51,27 @@ export async function renderDocumentPdf(
   const summary = summariseSale(sale, asOf)
   const filename = `${doc.number}.pdf`
 
+  // Every image this document might carry, fetched once, concurrently, *before*
+  // any rendering starts. Three reasons it is here and not inside a component:
+  // @react-pdf's render is synchronous and would otherwise reach out to the
+  // network mid-layout; a URL handed straight to `Image` bypasses the SSRF guard
+  // entirely; and the two fetches are independent, so they should cost one
+  // round trip's latency rather than two.
+  //
+  // Narrowed by document type rather than fetched unconditionally: a receipt
+  // carries no imagery at all, and up to five seconds of timeout for an image
+  // nothing renders is latency a buyer pays for nothing. A null URL short-
+  // circuits before any network call, so this is the whole of the gating.
+  // `toPdfImage` then applies the document-size budget and the PNG/JPEG-only
+  // rule; anything it rejects becomes null, which every consumer below already
+  // renders as its placeholder.
+  const fetched = await fetchGuardedImages({
+    logo: doc.type === 'INVOICE' ? doc.org.logoUrl : null,
+    hero: doc.type === 'STATEMENT' ? sale.project.heroImageUrl : null
+  })
+  const logo = toPdfImage(fetched.logo)
+  const heroImage = toPdfImage(fetched.hero)
+
   if (doc.type === 'INVOICE') {
     const entry = doc.scheduleEntry
     if (!entry) throw new ServiceError('Invoice is missing its installment', 'NOT_FOUND')
@@ -91,7 +113,7 @@ export async function renderDocumentPdf(
           number={doc.number}
           issuedAt={doc.createdAt}
           orgName={doc.org.name}
-          logoUrl={doc.org.logoUrl}
+          logo={logo}
           projectName={sale.project.name}
           projectLocation={sale.project.location}
           unitName={sale.unit.name}
@@ -167,6 +189,7 @@ export async function renderDocumentPdf(
         projectName={sale.project.name}
         projectLocation={sale.project.location}
         unitName={sale.unit.name}
+        heroImage={heroImage}
         buyerName={sale.buyer.fullName}
         buyerPhone={sale.buyer.phone}
         currency={sale.currency}

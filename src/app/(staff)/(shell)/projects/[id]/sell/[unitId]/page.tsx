@@ -6,6 +6,7 @@ import { DEFAULT_TERM_MONTHS, listBuyers } from '@/server/services/sales'
 import { bpsToPercentString } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
+import { UnitImagery } from '@/components/media'
 import { SellForm } from './SellForm'
 
 /**
@@ -69,6 +70,18 @@ export default async function SellUnitPage({
           </span>
         }
       />
+
+      {/* Before the form, not after it: an agent sells this unit with the buyer
+          beside them, and the plan and renders are what the conversation is
+          about. */}
+      <Card className="mb-5">
+        <UnitImagery
+          unitName={unit.name}
+          projectName={unit.project.name}
+          layoutImageUrl={unit.layoutImageUrl}
+          renderImageUrls={unit.renderImageUrls}
+        />
+      </Card>
 
       <SellForm
         projectId={unit.project.id}

@@ -5,6 +5,7 @@ import { deriveStatus } from '@/domain/status'
 import { bpsToPercentString, computeMarkupMinor, scheduleEntryLabel } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
+import { MediaImage, UnitImagery } from '@/components/media'
 import { StatusBadge } from '@/components/StatusBadge'
 import { InvoiceControl } from './InvoiceControl'
 
@@ -55,6 +56,17 @@ export default async function BuyerDashboard() {
         subtitle={`${sale.project.name} · ${sale.project.location}`}
       />
 
+      {/* The building, then the balance. A buyer signed a contract for something
+          that does not exist yet; the one thing they came here for besides the
+          numbers is a picture of it. */}
+      <div className="mb-5">
+        <MediaImage
+          kind="building"
+          src={sale.project.heroImageUrl}
+          alt={`${sale.project.name}, ${sale.project.location}`}
+        />
+      </div>
+
       <div className="mb-5 grid grid-cols-2 gap-3">
         <Card className="col-span-2">
           <p className="text-xs text-slate-500">Total owed</p>
@@ -102,6 +114,16 @@ export default async function BuyerDashboard() {
           Download my payment statement (PDF)
         </Link>
       ) : null}
+
+      <Card className="mb-6">
+        <UnitImagery
+          unitName={sale.unit.name}
+          projectName={sale.project.name}
+          layoutImageUrl={sale.unit.layoutImageUrl}
+          renderImageUrls={sale.unit.renderImageUrls}
+          heading="Your unit"
+        />
+      </Card>
 
       <h2 className="mb-2 mt-6 font-semibold">Payment schedule</h2>
       <Card className="p-0">

@@ -1,5 +1,6 @@
-import { Text, View } from '@react-pdf/renderer'
+import { Image, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
+import type { PdfImage } from '@/server/media/images'
 
 export interface MastheadProps {
   orgName: string
@@ -11,17 +12,18 @@ export interface MastheadProps {
   /** Right-aligned under the number. Omitted where a document has no issue date. */
   issuedAt?: Date
   /**
-   * The organisation's logo, if it has set one.
+   * The organisation's logo as *bytes*, already fetched through the SSRF guard —
+   * never a URL. Passing a remote URL to @react-pdf's `Image` would have it
+   * fetch the address itself, from inside a synchronous render, bypassing every
+   * check in `@/server/media/images`: the guard's whole value is that there is
+   * exactly one place a user-supplied URL turns into a request.
    *
-   * Deliberately not rendered yet: a URL supplied by a user and fetched by the
-   * server is an SSRF vector (link-local metadata endpoints, internal hosts,
-   * redirect chains), and the one guard that decides which URLs are fetchable
-   * belongs in a single place alongside the rest of the imagery work rather than
-   * half-built here. Until then the slot shows the placeholder below, which is
-   * what an organisation with no logo sees in any case — so wiring the image up
-   * later changes what fills the box, not the layout around it.
+   * Null — no logo set, or the fetch was refused, timed out, 404'd, came back
+   * oversized or in a format a PDF cannot carry — renders the bordered initials
+   * placeholder that was here before, in the same 46×46 slot, so the masthead's
+   * geometry is identical either way.
    */
-  logoUrl?: string | null
+  logo?: PdfImage | null
 }
 
 /**
@@ -54,7 +56,13 @@ export function Masthead(props: MastheadProps) {
     <View style={styles.masthead}>
       <View style={styles.mastheadIdentity}>
         <View style={styles.logoBox}>
-          <Text style={styles.logoInitials}>{orgInitials(props.orgName)}</Text>
+          {props.logo ? (
+            // `contain`, not `cover`: a logo is a mark, and cropping one to fill
+            // a square is worse than the whitespace around it.
+            <Image src={props.logo} style={styles.logoImage} />
+          ) : (
+            <Text style={styles.logoInitials}>{orgInitials(props.orgName)}</Text>
+          )}
         </View>
         <View>
           <Text style={styles.orgName}>{props.orgName}</Text>

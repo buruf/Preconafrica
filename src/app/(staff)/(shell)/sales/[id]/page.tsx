@@ -7,6 +7,7 @@ import { deriveStatus } from '@/domain/status'
 import { bpsToPercentString, computeMarkupMinor, scheduleEntryLabel } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
+import { UnitImagery } from '@/components/media'
 import { StatusBadge } from '@/components/StatusBadge'
 import { PaymentForm } from './PaymentForm'
 import { VoidControl } from './VoidControl'
@@ -118,6 +119,18 @@ export default async function StaffSalePage({ params }: { params: { id: string }
           ) : null}
         </Card>
       </div>
+
+      {/* The unit itself, so an agent on the phone about an arrears call is
+          looking at the same plan and renders the buyer has in front of them. */}
+      <Card className="mb-6">
+        <UnitImagery
+          unitName={sale.unit.name}
+          projectName={sale.project.name}
+          layoutImageUrl={sale.unit.layoutImageUrl}
+          renderImageUrls={sale.unit.renderImageUrls}
+          heading={`Unit ${sale.unit.name}`}
+        />
+      </Card>
 
       <h2 className="mb-2 mt-6 font-semibold">Record a payment</h2>
       <Card className="mb-6">

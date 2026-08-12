@@ -1,8 +1,9 @@
 import { requireAdmin } from '@/server/session'
-import { listTeam } from '@/server/services/team'
+import { getOrganization, listTeam } from '@/server/services/team'
 import { Card, PageHeader } from '@/components/ui'
 import { AddAgentForm } from './AddAgentForm'
 import { DeactivateControl } from './DeactivateControl'
+import { OrganizationForm } from './OrganizationForm'
 
 const ROLE_TONE: Record<'ADMIN' | 'AGENT', string> = {
   ADMIN: 'bg-slate-100 text-slate-700',
@@ -14,13 +15,17 @@ export default async function TeamPage() {
   // throws AuthorizationError straight into the (staff) error boundary
   // rather than redirecting somewhere friendlier.
   const actor = await requireAdmin()
-  const members = await listTeam(actor)
+  // Independent reads, both ADMIN-scoped — issued together rather than in
+  // sequence so the page costs one round trip's latency, not two.
+  const [members, org] = await Promise.all([listTeam(actor), getOrganization(actor)])
 
   return (
     <>
       <PageHeader title="Team" subtitle="Manage who at your organisation can sign in as staff." />
 
       <div className="space-y-6">
+        <OrganizationForm orgName={org.name} logoUrl={org.logoUrl} />
+
         <AddAgentForm />
 
         <ul className="space-y-3">

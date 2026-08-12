@@ -1,5 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
+import { HeroBand } from '@/server/pdf/HeroBand'
+import type { PdfImage } from '@/server/media/images'
 import { formatMinor } from '@/domain/currency'
 import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
 import type { InstallmentStatus } from '@/domain/status'
@@ -10,6 +12,13 @@ export interface StatementProps {
   projectName: string
   projectLocation: string
   unitName: string
+  /**
+   * The building photo as bytes, fetched through the SSRF guard before the
+   * render begins — never a URL (see `HeroBand`). Null prints the labelled
+   * placeholder band, which is also what an unreachable URL produces, so a
+   * statement always renders whatever the state of the developer's CDN.
+   */
+  heroImage: PdfImage | null
   buyerName: string
   buyerPhone: string
   currency: string
@@ -58,6 +67,11 @@ export function StatementDocument(props: StatementProps) {
             <Text style={styles.muted}>{props.number}</Text>
           </View>
         </View>
+
+        {/* Under the masthead, before the terms. A buyer's statement is the one
+            document they keep, and it described a building they had never seen a
+            picture of. */}
+        <HeroBand image={props.heroImage} />
 
         <View style={styles.section}>
           <View style={styles.row}>

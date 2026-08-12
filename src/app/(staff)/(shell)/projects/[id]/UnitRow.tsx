@@ -4,6 +4,8 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useFormState, useFormStatus } from 'react-dom'
 import { Button, ErrorText, Field } from '@/components/ui'
+import { MediaImage } from '@/components/media'
+import { MAX_RENDER_IMAGES } from '@/domain/media'
 import { updateUnitAction } from '../actions'
 
 interface UnitRowUnit {
@@ -16,6 +18,8 @@ interface UnitRowUnit {
   saleId: string | null
   priceLabel: string
   priceInput: string
+  layoutImageUrl: string | null
+  renderImageUrls: string[]
 }
 
 function SaveButton() {
@@ -58,10 +62,29 @@ export function UnitRow({
           aria-expanded={expanded}
           disabled={!editable}
         >
+          {/* Only when a layout is set. A placeholder per row would put fifty
+              dashed boxes down a fifty-unit floor and say nothing useful — the
+              empty state that matters here is the one inside the edit form. */}
+          {unit.layoutImageUrl ? (
+            <span className="block w-12 shrink-0">
+              <MediaImage
+                kind="layout"
+                src={unit.layoutImageUrl}
+                alt={`Floor plan for unit ${unit.name}`}
+                className="object-contain"
+              />
+            </span>
+          ) : null}
+
           <span className="min-w-0">
             <span className="block font-medium">{unit.name}</span>
             <span className="block text-xs text-slate-500">
               {unit.bedrooms} bed · {unit.sizeSqm} m²
+              {unit.renderImageUrls.length > 0
+                ? ` · ${unit.renderImageUrls.length} render${
+                    unit.renderImageUrls.length === 1 ? '' : 's'
+                  }`
+                : ''}
             </span>
           </span>
           <span className="flex shrink-0 items-center gap-2">
@@ -110,6 +133,49 @@ export function UnitRow({
             <Field label="Size (m²)" name="sizeSqm" defaultValue={unit.sizeSqm} />
             <Field label="Price" name="price" defaultValue={unit.priceInput} />
           </div>
+
+          <Field
+            label="Layout (floor plan) URL"
+            name="layoutImageUrl"
+            type="url"
+            defaultValue={unit.layoutImageUrl ?? ''}
+            placeholder="https://…/unit-3b-plan.png"
+            hint="An https link to a PNG or JPEG. Empty removes it."
+          />
+
+          {/* A textarea, one URL per line: several renders per unit, entered the
+              way anyone would paste them out of a folder listing or a
+              spreadsheet column. `parseRenderUrls` trims, drops blank lines,
+              de-duplicates and refuses the whole submission if any line is not a
+              usable https URL — named by line number, because "one of these is
+              wrong" is not an actionable error. */}
+          <Field
+            label="Render URLs"
+            name="renderImageUrls"
+            hint={`One https URL per line, up to ${MAX_RENDER_IMAGES}. Empty removes them all.`}
+          >
+            <textarea
+              name="renderImageUrls"
+              rows={3}
+              defaultValue={unit.renderImageUrls.join('\n')}
+              placeholder={'https://…/living.jpg\nhttps://…/kitchen.jpg'}
+              className="w-full rounded-lg border border-slate-300 p-3 font-mono text-sm outline-none focus:border-slate-900"
+            />
+          </Field>
+
+          {unit.renderImageUrls.length > 0 ? (
+            <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+              {unit.renderImageUrls.map((url, index) => (
+                <li key={url}>
+                  <MediaImage
+                    kind="render"
+                    src={url}
+                    alt={`Render ${index + 1} of ${unit.renderImageUrls.length} for unit ${unit.name}`}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : null}
 
           <SaveButton />
         </form>

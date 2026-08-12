@@ -1,6 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { Masthead } from '@/server/pdf/Masthead'
+import type { PdfImage } from '@/server/media/images'
 import type { InvoicePaymentRow } from '@/server/pdf/invoice-payments'
 import { formatMinor } from '@/domain/currency'
 import { DEPOSIT_SEQUENCE } from '@/domain/schedule'
@@ -11,11 +12,12 @@ export interface InvoiceProps {
   issuedAt: Date
   orgName: string
   /**
-   * Passed through so this component's contract is already right when the
-   * imagery work lands; the masthead renders the placeholder either way today.
-   * See `MastheadProps.logoUrl` for why nothing fetches it yet.
+   * The organisation's logo as bytes, already fetched through the SSRF guard —
+   * not a URL. Null (no logo set, or one that could not be fetched safely) falls
+   * back to the bordered initials placeholder in the same 46×46 slot, so the
+   * masthead's geometry is the same either way. See `MastheadProps.logo`.
    */
-  logoUrl: string | null
+  logo: PdfImage | null
   projectName: string
   projectLocation: string
   unitName: string
@@ -107,7 +109,7 @@ export function InvoiceDocument(props: InvoiceProps) {
           docType="INVOICE"
           docNumber={props.number}
           issuedAt={props.issuedAt}
-          logoUrl={props.logoUrl}
+          logo={props.logo}
         />
         <View style={styles.accentRule} />
 
