@@ -23,6 +23,9 @@ export default async function StaffLayout({ children }: { children: React.ReactN
                 Team
               </Link>
             ) : null}
+            <Link href="/account/password" className="flex min-h-11 items-center px-2">
+              Password
+            </Link>
           </nav>
           <form
             action={async () => {

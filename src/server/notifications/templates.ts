@@ -38,6 +38,63 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
+export interface PasswordResetEmailData {
+  fullName: string
+  /** Absolute, and carrying the raw token — it is clicked from a mail client. */
+  resetUrl: string
+  expiresInMinutes: number
+}
+
+/**
+ * The reset email. Plain text is not a fallback here, it is a first-class
+ * body: this app's buyers and agents read mail on phones over connections
+ * where the HTML part does not always render, and a reset link that only works
+ * in a rendered HTML part is a reset link that sometimes does not work at all.
+ * Both parts carry the full URL as visible text for the same reason — so it
+ * can be copied by hand when tapping the link fails.
+ *
+ * Every interpolated value is escaped in the HTML part, `resetUrl` included.
+ * The URL is app-generated rather than user input today, but it is the one
+ * value that lands inside an `href` attribute, and an unescaped quote there is
+ * an attribute-injection hole waiting for the day the base URL becomes
+ * configurable per organisation.
+ */
+export function renderPasswordResetEmail(data: PasswordResetEmailData) {
+  const subject = 'Reset your password'
+
+  const greeting = data.fullName.trim() ? `Hello ${data.fullName.trim()},` : 'Hello,'
+  const expiry = `This link expires in ${plural(data.expiresInMinutes, 'minute')} and can be used once.`
+  // Worded as the reassurance it is: the person reading this may not be the
+  // person who asked for it, and the only safe instruction for them is
+  // "do nothing" — never "click here to cancel", which is just another link.
+  const ignore =
+    'If you did not ask to reset your password, you can ignore this email — your password has not changed.'
+
+  const text = [
+    greeting,
+    '',
+    'Use the link below to choose a new password:',
+    '',
+    data.resetUrl,
+    '',
+    expiry,
+    '',
+    ignore
+  ].join('\n')
+
+  const resetUrlHtml = escapeHtml(data.resetUrl)
+
+  const html = `<!doctype html><html><body style="font-family:system-ui,sans-serif;font-size:15px;color:#0f172a;line-height:1.5">
+<p>${escapeHtml(greeting)}</p>
+<p>Use the link below to choose a new password:</p>
+<p><a href="${resetUrlHtml}">${resetUrlHtml}</a></p>
+<p>${escapeHtml(expiry)}</p>
+<p style="color:#64748b">${escapeHtml(ignore)}</p>
+</body></html>`
+
+  return { subject, text, html }
+}
+
 export function renderTemplate(key: TemplateKey, data: TemplateData) {
   const amount = formatMinor(data.amountMinor, data.currency)
   const due = isoDate(data.dueDate)

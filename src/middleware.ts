@@ -24,6 +24,12 @@ export const config = {
     '/sales/:path*',
     '/arrears/:path*',
     '/team/:path*',
-    '/dashboard/:path*'
+    '/dashboard/:path*',
+    // The staff change-password page. The buyer's copy lives under
+    // /dashboard/account/password and is already covered by the line above.
+    // Listed for the same reason /team was: an incomplete matcher reads like
+    // an intentional exemption to whoever finds it next, and this grants no
+    // access either way.
+    '/account/:path*'
   ]
 }

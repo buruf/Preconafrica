@@ -15,6 +15,9 @@ export default async function BuyerLayout({ children }: { children: React.ReactN
             <Link href="/dashboard" className="flex min-h-11 items-center px-2">
               Dashboard
             </Link>
+            <Link href="/dashboard/account/password" className="flex min-h-11 items-center px-2">
+              Password
+            </Link>
           </nav>
           <form
             action={async () => {
