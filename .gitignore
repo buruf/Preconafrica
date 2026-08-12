@@ -6,4 +6,3 @@ node_modules
 next-env.d.ts
 .claude/
 .vercel
-.vercel
