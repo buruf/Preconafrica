@@ -14,9 +14,11 @@ declare module 'next-auth' {
       role: 'ADMIN' | 'AGENT' | 'BUYER'
       buyerId: string | null
       /**
-       * The JWT's `iat`, in whole seconds, surfaced so `requireUser` can
+       * When this session began, in whole seconds — the JWT's `authTime`
+       * claim, not its `iat` (which Auth.js rewrites on every session read;
+       * see the session callback in auth.ts). Surfaced so `requireUser` can
        * compare it against `User.passwordChangedAt`. Optional because a token
-       * without an `iat` is a shape worth typing for:
+       * without the claim is a shape worth typing for:
        * `sessionOutdatedByPasswordChange` reads `undefined` as "cannot prove
        * this session postdates the change" and revokes it.
        */
@@ -30,5 +32,12 @@ declare module 'next-auth/jwt' {
     orgId: string
     role: 'ADMIN' | 'AGENT' | 'BUYER'
     buyerId: string | null
+    /**
+     * Seconds since the epoch at which this session was created, stamped once
+     * in the jwt callback's sign-in branch. Optional: tokens minted before
+     * this claim existed do not carry it, and must be read as unprovable
+     * rather than as new.
+     */
+    authTime?: number
   }
 }

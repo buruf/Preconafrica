@@ -61,10 +61,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     jwt({ token, user }) {
+      // `user` is truthy only on the sign-in call. Every later invocation is a
+      // refresh of a token that already exists, and skips this block — which
+      // is the entire reason `authTime` can be trusted to mean "when this
+      // session began" where `iat` cannot.
       if (user) {
         token.orgId = user.orgId
         token.role = user.role
         token.buyerId = user.buyerId
+        token.authTime = Math.floor(Date.now() / 1000)
       }
       return token
     },
@@ -73,14 +78,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.orgId = token.orgId as string
       session.user.role = token.role as 'ADMIN' | 'AGENT' | 'BUYER'
       session.user.buyerId = (token.buyerId as string | null) ?? null
-      // `iat` is stamped by Auth.js when the JWT is encoded, and is the only
-      // claim that says *when* this session started. Surfacing it is what lets
-      // `requireUser` compare it against `User.passwordChangedAt` and discard
-      // sessions that predate a password change: a JWT cannot be revoked from
-      // the outside, so it has to be out-argued from the inside. It is not
-      // secret — the token is signed, not encrypted, so its holder could
-      // already read `iat`.
-      session.user.tokenIssuedAt = token.iat
+      // Session age comes from our own `authTime` claim, stamped once at
+      // sign-in, and deliberately NOT from `iat`.
+      //
+      // `iat` looks like the right claim and is not: Auth.js re-signs the JWT
+      // on every session read, and `jwt.encode` calls `.setIssuedAt()`, so
+      // `iat` is rewritten to "now" each time and the refreshed cookie is
+      // handed back to the browser — by `GET /api/auth/session`, which is
+      // public, and by the middleware, which attaches `set-cookie` even to the
+      // redirect that bounced the request. Reading `iat` therefore made
+      // revocation self-healing: a stolen cookie needed one request to get a
+      // fresh `iat`, after which `passwordChangedAt >= iat` was false forever.
+      // A custom claim survives re-encoding untouched because the jwt callback
+      // returns the token unchanged on a refresh.
+      //
+      // There is no `iat` fallback on purpose. A token minted before this
+      // claim existed has no provable start time, and
+      // `sessionOutdatedByPasswordChange` reads `undefined` as "revoke" —
+      // failing closed. The cost is that anyone who has ever changed their
+      // password signs in once more after this ships.
+      session.user.tokenIssuedAt = token.authTime as number | undefined
       return session
     }
   }
