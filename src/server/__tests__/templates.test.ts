@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { renderTemplate } from '@/server/notifications/templates'
+import { renderPasswordResetEmail, renderTemplate } from '@/server/notifications/templates'
 
 const base = {
   buyerName: 'Amina Yusuf',
@@ -80,5 +80,52 @@ describe('renderTemplate', () => {
 
     expect(out.html).not.toContain(`href="${hostileUrl}"`)
     expect(out.html).toContain('href="https://example.com/x&quot; onmouseover=&quot;alert(1)"')
+  })
+})
+
+describe('renderPasswordResetEmail', () => {
+  const base = {
+    fullName: 'Chidi Okeke',
+    resetUrl: 'https://precon.test/reset-password?token=abc123',
+    expiresInMinutes: 60
+  }
+
+  it('puts the full link in the plain-text body, not only in the HTML', () => {
+    // The plain-text part is first-class here: a buyer on a phone whose mail
+    // client does not render the HTML part must still be able to reach the
+    // link, by tapping it or by copying it out by hand.
+    const out = renderPasswordResetEmail(base)
+    expect(out.text).toContain(base.resetUrl)
+    expect(out.text).toContain('Chidi Okeke')
+  })
+
+  it('says the link expires in 60 minutes, in both bodies', () => {
+    const out = renderPasswordResetEmail(base)
+    expect(out.text).toContain('60 minutes')
+    expect(out.html).toContain('60 minutes')
+  })
+
+  it('tells an unexpecting recipient to do nothing', () => {
+    const out = renderPasswordResetEmail(base)
+    expect(out.text).toContain('you can ignore this email')
+    expect(out.text).toContain('your password has not changed')
+  })
+
+  it('escapes a hostile name before it reaches the HTML body', () => {
+    const out = renderPasswordResetEmail({ ...base, fullName: '<b>Chidi</b>' })
+    expect(out.html).not.toContain('<b>Chidi</b>')
+    expect(out.html).toContain('&lt;b&gt;Chidi&lt;/b&gt;')
+  })
+
+  it('quote-escapes the URL before it lands in the href attribute', () => {
+    const hostile = 'https://precon.test/reset-password?token=x" onmouseover="alert(1)'
+    const out = renderPasswordResetEmail({ ...base, resetUrl: hostile })
+    expect(out.html).not.toContain(`href="${hostile}"`)
+    expect(out.html).toContain('&quot; onmouseover=&quot;alert(1)')
+  })
+
+  it('greets without a name rather than "Hello ," when the name is blank', () => {
+    const out = renderPasswordResetEmail({ ...base, fullName: '  ' })
+    expect(out.text.startsWith('Hello,')).toBe(true)
   })
 })
