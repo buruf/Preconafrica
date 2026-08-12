@@ -121,6 +121,8 @@ export default async function BuyerDashboard() {
                 <InvoiceControl
                   scheduleEntryId={entry.id}
                   documentId={invoiceByEntryId.get(entry.id) ?? null}
+                  // Server-side comparison; only the boolean crosses over.
+                  hasPayment={entry.amountPaidMinor > 0n}
                 />
               </div>
             </li>

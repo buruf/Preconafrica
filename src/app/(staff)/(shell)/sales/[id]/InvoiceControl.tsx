@@ -28,11 +28,19 @@ function IssueButton() {
 export function InvoiceControl({
   saleId,
   scheduleEntryId,
-  documentId
+  documentId,
+  /**
+   * Whether anything has been allocated to this installment — the same condition
+   * `issueInvoice` enforces, decided on the server. A boolean, not the paid
+   * amount: a `bigint` cannot cross into a client component, and the button does
+   * not need the figure (the row above it already prints it).
+   */
+  hasPayment
 }: {
   saleId: string
   scheduleEntryId: string
   documentId: string | null
+  hasPayment: boolean
 }) {
   const [error, formAction] = useFormState(issueInvoiceAction, undefined)
 
@@ -44,6 +52,17 @@ export function InvoiceControl({
       >
         Invoice
       </Link>
+    )
+  }
+
+  // Not a disabled button: a control that cannot be used explains itself better
+  // as a sentence than as a greyed-out verb, and offering the action only to
+  // refuse it in a server round trip is a worse way to teach the rule.
+  if (!hasPayment) {
+    return (
+      <p className="inline-flex min-h-11 items-center text-xs text-slate-500">
+        Invoice available once a payment is recorded
+      </p>
     )
   }
 

@@ -67,7 +67,26 @@ export async function issueInvoice(actor: SessionActor, scheduleEntryId: string)
   })
   if (!entry) throw new ServiceError('Installment not found', 'NOT_FOUND')
 
+  // Before the gate below, deliberately. An invoice that was legitimately
+  // issued stays downloadable whatever happens to the money afterwards: voiding
+  // the payment that justified it takes the entry's paid amount back to zero,
+  // and re-checking here would turn a document the buyer already holds into a
+  // 404 on their next tap. Idempotency is about the document, not the balance.
   if (entry.document) return { documentId: entry.document.id }
+
+  // An invoice is a demand for the balance of something already part-settled —
+  // the product decision is that any allocated payment makes one issuable, and
+  // that nothing at all makes one meaningless. CONFLICT rather than VALIDATION:
+  // the request is well formed and the installment is really this caller's, so
+  // there is nothing to correct in the input. What refuses it is the state of
+  // the entry right now, which a recorded payment changes without the caller
+  // touching anything they sent.
+  if (entry.amountPaidMinor === 0n) {
+    throw new ServiceError(
+      'An invoice can be issued once a payment has been recorded against this installment.',
+      'CONFLICT'
+    )
+  }
 
   try {
     const doc = await prisma.$transaction((tx) =>
