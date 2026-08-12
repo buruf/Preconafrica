@@ -30,8 +30,12 @@ export async function GET(request: Request) {
   }
 
   const now = new Date()
-  const tally = await runReminderSweep(now)
+
+  // Reaped before the sweep, deliberately. `runReminderSweep` throws outright
+  // when the mail provider is unconfigured, and housekeeping that only happens
+  // when email happens to be working is housekeeping that quietly stops.
   const resetTokensPurged = await purgeDeadResetTokens(now)
+  const tally = await runReminderSweep(now)
 
   return NextResponse.json({ ok: true, ...tally, resetTokensPurged })
 }
