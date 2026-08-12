@@ -51,8 +51,24 @@ const state = {
     user: { disabledAt: Date | null }
   } | null,
   /** What the conditional claim-the-token update reports having matched. */
-  claimedCount: 1
+  claimedCount: 1,
+  /** What the conditional `disabledAt: null` password write reports. */
+  userWriteCount: 1,
+  /** Rows created by this test's transactions, so a later throttle re-check
+   *  inside the lock can see what an earlier one committed. */
+  created: [] as unknown[],
+  /** What deleteMany reports for the reaper. */
+  purgedCount: 0
 }
+
+/**
+ * Transactions run one at a time, which is what `pg_advisory_xact_lock` buys
+ * the service for a given user. Modelling it is the only way a single-process
+ * test can say anything about the race: with the throttle re-check inside this
+ * queue, two overlapping requests must produce one create; with the check back
+ * outside it (the bug), both would pass it and both would create.
+ */
+let txQueue: Promise<unknown> = Promise.resolve()
 
 vi.mock('@/server/db', () => ({
   prisma: {
@@ -71,29 +87,64 @@ vi.mock('@/server/db', () => ({
       findUnique: vi.fn(async (args: unknown) => {
         calls.push({ op: 'passwordResetToken.findUnique', args })
         return state.token
+      }),
+      deleteMany: vi.fn(async (args: unknown) => {
+        calls.push({ op: 'passwordResetToken.deleteMany', args })
+        return { count: state.purgedCount }
       })
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-      calls.push({ op: '$transaction', args: null })
       const tx = {
+        $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          calls.push({ op: 'tx.$executeRaw', args: { sql: strings.join('?'), values } })
+          return 1
+        },
         passwordResetToken: {
+          findFirst: async (args: unknown) => {
+            calls.push({ op: 'tx.passwordResetToken.findFirst', args })
+            // A row this test's own earlier transaction created counts as a
+            // live token, exactly as it would once committed.
+            return state.recentToken ?? (state.created.length > 0 ? { id: 'tok_live' } : null)
+          },
           updateMany: async (args: { where: { id?: string } }) => {
             calls.push({ op: 'tx.passwordResetToken.updateMany', args })
             // Only the conditional claim (which filters by a specific id) is
             // allowed to report zero; the sweep of the rest is unconditional.
             return { count: args.where.id ? state.claimedCount : 0 }
           },
-          create: record('tx.passwordResetToken.create', { id: 'tok_new' })
+          create: async (args: unknown) => {
+            calls.push({ op: 'tx.passwordResetToken.create', args })
+            state.created.push(args)
+            return { id: 'tok_new' }
+          }
         },
-        user: { update: record('tx.user.update', {}) }
+        user: {
+          update: record('tx.user.update', {}),
+          updateMany: async (args: unknown) => {
+            calls.push({ op: 'tx.user.updateMany', args })
+            return { count: state.userWriteCount }
+          }
+        }
       }
-      return fn(tx)
+
+      // Serialised, and the recorded `$transaction` marker goes inside the
+      // queue so the call order the tests read matches the order they ran in.
+      const run = txQueue.then(async () => {
+        calls.push({ op: '$transaction', args: null })
+        return fn(tx)
+      })
+      // Keep the queue alive past a rejecting transaction.
+      txQueue = run.then(
+        () => undefined,
+        () => undefined
+      )
+      return run
     })
   }
 }))
 
 const { prisma } = await import('@/server/db')
-const { requestPasswordReset, resetPassword, changePassword } = await import(
+const { requestPasswordReset, resetPassword, changePassword, purgeDeadResetTokens } = await import(
   '@/server/services/passwords'
 )
 const { ServiceError } = await import('@/server/services/errors')
@@ -112,8 +163,13 @@ beforeEach(() => {
   state.recentToken = null
   state.token = null
   state.claimedCount = 1
+  state.userWriteCount = 1
+  state.created.length = 0
+  state.purgedCount = 0
+  txQueue = Promise.resolve()
   vi.mocked(prisma.user.findUnique).mockClear()
   process.env.NEXTAUTH_URL = 'https://precon.test'
+  delete process.env.AUTH_URL
 })
 
 describe('requestPasswordReset', () => {
@@ -201,7 +257,7 @@ describe('requestPasswordReset', () => {
 
     await requestPasswordReset('chidi@sunrise.test', NOW)
 
-    const where = (callsOf('passwordResetToken.findFirst')[0].args as {
+    const where = (callsOf('tx.passwordResetToken.findFirst')[0].args as {
       where: { createdAt: { gt: Date }; usedAt: null; expiresAt: { gt: Date } }
     }).where
     expect(NOW.getTime() - where.createdAt.gt.getTime()).toBe(60_000)
@@ -209,6 +265,57 @@ describe('requestPasswordReset', () => {
     // who used their link an hour ago could not ask for another.
     expect(where.usedAt).toBeNull()
     expect(where.expiresAt.gt).toEqual(NOW)
+  })
+
+  it('takes a per-user advisory lock before it re-reads the throttle', async () => {
+    state.user = ACTIVE_USER
+
+    await requestPasswordReset('chidi@sunrise.test', NOW)
+
+    const lock = callsOf('tx.$executeRaw')
+    expect(lock).toHaveLength(1)
+    expect((lock[0].args as { sql: string }).sql).toContain('pg_advisory_xact_lock')
+    expect((lock[0].args as { values: unknown[] }).values).toEqual(['usr_1'])
+
+    // Order is the whole point: lock, then read, then write.
+    const ops = calls.map((c) => c.op)
+    expect(ops.indexOf('tx.$executeRaw')).toBeLessThan(
+      ops.indexOf('tx.passwordResetToken.findFirst')
+    )
+    expect(ops.indexOf('tx.passwordResetToken.findFirst')).toBeLessThan(
+      ops.indexOf('tx.passwordResetToken.create')
+    )
+  })
+
+  it('creates exactly one token when two requests overlap', async () => {
+    // The race the lock exists for: both callers pass the throttle, both mail
+    // a link, and the account ends up with two live tokens — which the schema
+    // comment on `usedAt` says cannot happen. With the re-check inside the
+    // serialised transaction, the loser sees the winner's row and backs out.
+    state.user = ACTIVE_USER
+
+    const [first, second] = await Promise.all([
+      requestPasswordReset('chidi@sunrise.test', NOW),
+      requestPasswordReset('chidi@sunrise.test', NOW)
+    ])
+
+    expect(callsOf('tx.passwordResetToken.create')).toHaveLength(1)
+    // One of the two got a link; the other was told what a throttled or
+    // unknown caller is told.
+    const urls = [first.resetUrl, second.resetUrl].filter((url) => url !== null)
+    expect(urls).toHaveLength(1)
+    const refused = [first, second].find((r) => r.resetUrl === null)
+    expect(refused).toEqual({ resetUrl: null, fullName: null })
+  })
+
+  it('falls back to AUTH_URL when NEXTAUTH_URL is unset', async () => {
+    state.user = ACTIVE_USER
+    delete process.env.NEXTAUTH_URL
+    process.env.AUTH_URL = 'https://auth-url.test'
+
+    const { resetUrl } = await requestPasswordReset('chidi@sunrise.test', NOW)
+
+    expect(resetUrl).toMatch(/^https:\/\/auth-url\.test\/reset-password\?token=.+/)
   })
 
   it('makes the unknown-user and throttled paths indistinguishable to the caller', async () => {
@@ -275,8 +382,8 @@ describe('resetPassword', () => {
 
     await resetPassword(RAW, 'newpassword123', NOW)
 
-    const update = callsOf('tx.user.update')[0].args as {
-      where: { id: string }
+    const update = callsOf('tx.user.updateMany')[0].args as {
+      where: { id: string; disabledAt: null }
       data: { passwordHash: string; passwordChangedAt: Date }
     }
     expect(update.where.id).toBe('usr_1')
@@ -347,6 +454,58 @@ describe('resetPassword', () => {
 
     await expect(resetPassword(RAW, 'short', NOW)).rejects.toThrow('Use at least 8 characters')
     expect(callsOf('passwordResetToken.findUnique')).toHaveLength(0)
+  })
+
+  it('writes the password only while the account is still active', async () => {
+    state.token = USABLE
+
+    await resetPassword(RAW, 'newpassword123', NOW)
+
+    // The filter is what closes the window between the deactivation check
+    // (outside the transaction) and the write.
+    expect(callsOf('tx.user.updateMany')[0].args).toMatchObject({
+      where: { id: 'usr_1', disabledAt: null }
+    })
+  })
+
+  it('refuses when the account is deactivated between the check and the write', async () => {
+    state.token = USABLE
+    // An admin deactivated the account mid-flight, so the conditional write
+    // matches nothing. Without this the reset would have handed a working
+    // password to an account that had just been switched off.
+    state.userWriteCount = 0
+
+    await expect(resetPassword(RAW, 'newpassword123', NOW)).rejects.toThrow(INVALID_MESSAGE)
+  })
+})
+
+describe('purgeDeadResetTokens', () => {
+  it('deletes spent and expired rows, and nothing else', async () => {
+    state.purgedCount = 4
+
+    const count = await purgeDeadResetTokens(NOW)
+
+    expect(count).toBe(4)
+    const args = callsOf('passwordResetToken.deleteMany')[0].args as {
+      where: { OR: unknown[] }
+    }
+    expect(args.where.OR).toEqual([{ usedAt: { not: null } }, { expiresAt: { lte: NOW } }])
+  })
+
+  it('leaves a live token alone', async () => {
+    // Stated as a property of the filter rather than of a fake row set: a live
+    // token is unspent and unexpired, which matches neither disjunct.
+    await purgeDeadResetTokens(NOW)
+
+    const args = callsOf('passwordResetToken.deleteMany')[0].args as {
+      where: { OR: Array<Record<string, unknown>> }
+    }
+    const live = { usedAt: null, expiresAt: new Date(NOW.getTime() + 60_000) }
+    const matches = args.where.OR.some((clause) => {
+      if ('usedAt' in clause) return live.usedAt !== null
+      return live.expiresAt.getTime() <= NOW.getTime()
+    })
+    expect(matches).toBe(false)
   })
 })
 

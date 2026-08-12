@@ -86,24 +86,43 @@ export async function requestPasswordReset(
   // silently, for the same non-disclosure reason.
   if (user.disabledAt !== null) return { resetUrl: null, fullName: null }
 
-  const recent = await prisma.passwordResetToken.findFirst({
-    where: {
-      userId: user.id,
-      usedAt: null,
-      expiresAt: { gt: now },
-      createdAt: { gt: new Date(now.getTime() - RESET_THROTTLE_MS) }
-    },
-    select: { id: true }
-  })
-  if (recent) return { resetUrl: null, fullName: null }
-
   // 32 bytes of CSPRNG output: 256 bits of entropy, so the token cannot be
   // guessed or brute-forced against the unique index. base64url because it
   // travels in a query string and must survive being copied out of an email
-  // client without percent-encoding.
+  // client without percent-encoding. Generated before the transaction because
+  // it is pure computation; it is simply discarded if the throttle wins.
   const rawToken = randomBytes(32).toString('base64url')
 
-  await prisma.$transaction(async (tx) => {
+  const issued = await prisma.$transaction(async (tx) => {
+    // Serialise every concurrent request for *this* user, and nothing else.
+    // Read-then-write with no lock is a race, and this one has teeth: two
+    // submissions a few milliseconds apart both saw an empty throttle window,
+    // both mailed a link, and both created a row — leaving two live tokens for
+    // one account, which is exactly what the schema comment on
+    // `PasswordResetToken.usedAt` claims cannot happen. (The retirement sweep
+    // below does not save it: each transaction retires the rows it can see,
+    // and neither can see the other's uncommitted insert.)
+    //
+    // A transaction-scoped advisory lock is the cheap fix: it needs no table,
+    // it is released on commit or rollback with no unlock call to forget, and
+    // `hashtext` turns the cuid into the bigint the lock space wants. A hash
+    // collision between two different user ids costs one of them a brief wait
+    // and nothing else.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${user.id}))`
+
+    // Re-checked *inside* the lock. This is the read that decides; doing it
+    // outside would be the same race with extra steps.
+    const recent = await tx.passwordResetToken.findFirst({
+      where: {
+        userId: user.id,
+        usedAt: null,
+        expiresAt: { gt: now },
+        createdAt: { gt: new Date(now.getTime() - RESET_THROTTLE_MS) }
+      },
+      select: { id: true }
+    })
+    if (recent) return false
+
     // Asking for a new link retires the old ones. Two live links for one
     // account is one more than the user believes they have, and the older
     // one is the likelier to be sitting somewhere it should not be.
@@ -122,7 +141,12 @@ export async function requestPasswordReset(
         createdAt: now
       }
     })
+
+    return true
   })
+
+  // Throttled, and reported exactly as the unknown-address path is.
+  if (!issued) return { resetUrl: null, fullName: null }
 
   return { resetUrl: resetUrlFor(rawToken), fullName: user.fullName }
 }
@@ -188,10 +212,22 @@ export async function resetPassword(
     // only closes the login form. They are written together, in one
     // transaction, because a state where one landed and the other did not is
     // either a lockout or a live session that should be dead.
-    await tx.user.update({
-      where: { id: token.userId },
+    //
+    // Conditional on the account still being active, exactly as the token
+    // claim above is conditional on the token still being unspent, and for the
+    // same reason: the deactivation check ran outside this transaction, and an
+    // admin who deactivates the account in the seconds between that read and
+    // this write would otherwise be handing it a fresh working password on the
+    // way out. `updateMany` because `update` cannot take a non-unique filter.
+    // The count is checked, and a miss throws the one generic message — a
+    // deactivated account must not learn that it is deactivated from here.
+    const written = await tx.user.updateMany({
+      where: { id: token.userId, disabledAt: null },
       data: { passwordHash, passwordChangedAt: now }
     })
+    if (written.count !== 1) {
+      throw new ServiceError(INVALID_TOKEN_MESSAGE, 'VALIDATION')
+    }
   })
 }
 
@@ -246,4 +282,26 @@ export async function changePassword(
       data: { usedAt: now }
     })
   })
+}
+
+/**
+ * Delete reset tokens that can never be used again.
+ *
+ * Nothing else removes these rows. Every request creates one and every reset,
+ * supersession or password change only *marks* one — so the table grew
+ * monotonically, one row per request, forever. That is not a security hole on
+ * its own (a spent or expired row grants nothing, and only a sha256 is stored),
+ * but it is an index that never stops growing and a pile of records about who
+ * asked for a reset and when, kept for no reason anybody chose.
+ *
+ * "Dead" is the exact complement of what `isResetTokenUsable` accepts: spent
+ * (`usedAt` set) or past its expiry. A live token is never touched, and
+ * deleting a dead one changes no answer — `resetPassword` looks a missing row
+ * and an unusable row up to the same generic refusal.
+ */
+export async function purgeDeadResetTokens(now: Date): Promise<number> {
+  const { count } = await prisma.passwordResetToken.deleteMany({
+    where: { OR: [{ usedAt: { not: null } }, { expiresAt: { lte: now } }] }
+  })
+  return count
 }
