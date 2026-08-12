@@ -22,6 +22,7 @@ const STATEMENT: StatementProps = {
   projectName: 'Sunrise Heights',
   projectLocation: 'Lekki Phase 1, Lagos',
   unitName: '3B',
+  logo: null,
   heroImage: null,
   buyerName: 'Kwame Mensah',
   buyerPhone: '+2348031234567',

@@ -46,8 +46,16 @@ export function orgInitials(orgName: string): string {
 
 /**
  * The identity block every document opens with: logo slot, organisation, what
- * this document is and its number. Extracted because the invoice needed a
- * proper one and the other two documents should not drift away from it.
+ * this document is and its number.
+ *
+ * All three document types render it, which is the point of it being a
+ * component. It was extracted for the invoice first, with a note that the other
+ * two "should not drift away from it" — a note that described an intention and
+ * not the code, because for a while only the invoice used it. That meant the
+ * developer's letterhead was missing from the statement, which is the one
+ * document a buyer keeps, and from every receipt. The three now share it, so
+ * `INVOICE`, `STATEMENT` and `RECEIPT` differ below this block and nowhere
+ * above it.
  */
 export function Masthead(props: MastheadProps) {
   const lines = (props.lines ?? []).filter((line): line is string => Boolean(line))

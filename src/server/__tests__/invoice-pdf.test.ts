@@ -1,9 +1,9 @@
-import zlib from 'node:zlib'
 import { createElement } from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { describe, expect, it } from 'vitest'
 import { InvoiceDocument, type InvoiceProps } from '@/server/pdf/InvoiceDocument'
 import { UNKNOWN_RECORDER } from '@/server/pdf/invoice-payments'
+import { extractPdfText } from '@/server/__tests__/pdf-fixtures'
 
 /**
  * A real render, not a snapshot of props: the failure this guards against is a
@@ -12,75 +12,10 @@ import { UNKNOWN_RECORDER } from '@/server/pdf/invoice-payments'
  *
  * `createElement` rather than JSX because vitest only collects `.ts` files
  * (see `include` in vitest.config.ts); the `.tsx` component it imports is
- * compiled with the automatic JSX runtime configured there.
+ * compiled with the automatic JSX runtime configured there. The PDF reader and
+ * the props fixture both live in `pdf-fixtures`, shared with the letterhead
+ * test rather than copied into it.
  */
-
-/**
- * Enough of a PDF reader for an assertion. @react-pdf writes its page content
- * as Flate-compressed streams, and text inside them as hex strings in `TJ`
- * arrays — split at kerning pairs, which is why the pieces of one array are
- * joined back together before anything is matched against them.
- */
-/**
- * The bytes are WinAnsi, which agrees with latin1 everywhere except 0x80–0x9F —
- * the range holding the typographic characters these documents actually use. Only
- * those are mapped back; anything else would be a character the standard faces
- * cannot print anyway.
- */
-const WINANSI_HIGH: Record<string, string> = {
-  '\x91': '‘',
-  '\x92': '’',
-  '\x93': '“',
-  '\x94': '”',
-  '\x96': '–',
-  '\x97': '—'
-}
-
-function fromWinAnsi(text: string): string {
-  return text.replace(/[\x80-\x9f]/g, (char) => WINANSI_HIGH[char] ?? char)
-}
-
-function extractText(buffer: Buffer): string {
-  const latin = buffer.toString('latin1')
-  const streams: string[] = []
-
-  const streamStart = /stream\r?\n?/g
-  let marker: RegExpExecArray | null
-  while ((marker = streamStart.exec(latin))) {
-    const from = marker.index + marker[0].length
-    const to = latin.indexOf('endstream', from)
-    if (to < 0) continue
-    const raw = buffer.subarray(from, to)
-    try {
-      streams.push(zlib.inflateSync(raw).toString('latin1'))
-    } catch {
-      // Not every stream is compressed (or text at all) — skip what will not
-      // inflate rather than failing the read.
-    }
-  }
-
-  const runs: string[] = []
-  const show = /\[((?:\s*<[0-9a-fA-F]*>|\s*-?[\d.]+)*)\s*\]\s*TJ|\(((?:\\.|[^\\)])*)\)\s*Tj/g
-  for (const content of streams) {
-    let op: RegExpExecArray | null
-    while ((op = show.exec(content))) {
-      if (op[1] !== undefined) {
-        runs.push(
-          [...op[1].matchAll(/<([0-9a-fA-F]*)>/g)]
-            .map(([, hex]) => Buffer.from(hex, 'hex').toString('latin1'))
-            .join('')
-        )
-      } else if (op[2] !== undefined) {
-        runs.push(op[2])
-      }
-    }
-  }
-
-  // Runs are separate text nodes and separate laid-out lines, so they are joined
-  // with a space and the whitespace collapsed: a phrase reads the same whether
-  // the layout kept it in one run or split it across two.
-  return fromWinAnsi(runs.join(' ')).replace(/\s+/g, ' ')
-}
 
 const BASE: InvoiceProps = {
   number: 'INV-000042',
@@ -128,7 +63,7 @@ async function render(props: Partial<InvoiceProps> = {}) {
   // JSX call sites pass too — the cast is the type-only difference between
   // writing `<InvoiceDocument …/>` in a .tsx and calling createElement here.
   const buffer = await renderToBuffer(element as Parameters<typeof renderToBuffer>[0])
-  return { buffer, text: extractText(buffer) }
+  return { buffer, text: extractPdfText(buffer) }
 }
 
 describe('invoice PDF', () => {

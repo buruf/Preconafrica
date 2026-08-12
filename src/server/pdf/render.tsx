@@ -58,15 +58,21 @@ export async function renderDocumentPdf(
   // entirely; and the two fetches are independent, so they should cost one
   // round trip's latency rather than two.
   //
-  // Narrowed by document type rather than fetched unconditionally: a receipt
-  // carries no imagery at all, and up to five seconds of timeout for an image
-  // nothing renders is latency a buyer pays for nothing. A null URL short-
-  // circuits before any network call, so this is the whole of the gating.
-  // `toPdfImage` then applies the document-size budget and the PNG/JPEG-only
-  // rule; anything it rejects becomes null, which every consumer below already
-  // renders as its placeholder.
+  // The logo is fetched for every type, because all three carry the same
+  // masthead — see `Masthead`. It used to be fetched for INVOICE only, which
+  // left the developer's letterhead off the statement a buyer keeps and off
+  // every receipt while a comment in `Masthead` said the opposite.
+  //
+  // The hero photo is still narrowed to the statement, and that narrowing is the
+  // reason this is a per-type map rather than an unconditional fetch: it is the
+  // only document with a band to put a building in, and up to five seconds of
+  // timeout for an image nothing renders is latency a buyer pays for nothing. A
+  // null URL short-circuits before any network call, so an org with no logo set
+  // costs nothing either. `toPdfImage` then applies the document-size budget and
+  // the PNG/JPEG-only rule; anything it rejects becomes null, which every
+  // consumer below already renders as its placeholder.
   const fetched = await fetchGuardedImages({
-    logo: doc.type === 'INVOICE' ? doc.org.logoUrl : null,
+    logo: doc.org.logoUrl,
     hero: doc.type === 'STATEMENT' ? sale.project.heroImageUrl : null
   })
   const logo = toPdfImage(fetched.logo)
@@ -149,6 +155,7 @@ export async function renderDocumentPdf(
         <ReceiptDocument
           number={doc.number}
           orgName={doc.org.name}
+          logo={logo}
           projectName={sale.project.name}
           unitName={sale.unit.name}
           buyerName={sale.buyer.fullName}
@@ -186,6 +193,7 @@ export async function renderDocumentPdf(
       <StatementDocument
         number={doc.number}
         orgName={doc.org.name}
+        logo={logo}
         projectName={sale.project.name}
         projectLocation={sale.project.location}
         unitName={sale.unit.name}

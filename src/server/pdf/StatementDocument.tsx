@@ -1,6 +1,7 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { HeroBand } from '@/server/pdf/HeroBand'
+import { Masthead } from '@/server/pdf/Masthead'
 import type { PdfImage } from '@/server/media/images'
 import { formatMinor } from '@/domain/currency'
 import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
@@ -12,6 +13,13 @@ export interface StatementProps {
   projectName: string
   projectLocation: string
   unitName: string
+  /**
+   * The organisation's logo as bytes, fetched through the SSRF guard before the
+   * render begins — never a URL. Null falls back to the bordered initials in the
+   * same 46×46 slot, so the masthead's geometry is identical either way. See
+   * `MastheadProps.logo`; this is the same letterhead the invoice carries.
+   */
+  logo: PdfImage | null
   /**
    * The building photo as bytes, fetched through the SSRF guard before the
    * render begins — never a URL (see `HeroBand`). Null prints the labelled
@@ -56,17 +64,17 @@ export function StatementDocument(props: StatementProps) {
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.orgName}>{props.orgName}</Text>
-            <Text style={styles.muted}>{props.projectName}</Text>
-            <Text style={styles.muted}>{props.projectLocation}</Text>
-          </View>
-          <View>
-            <Text style={styles.docTitle}>STATEMENT</Text>
-            <Text style={styles.muted}>{props.number}</Text>
-          </View>
-        </View>
+        {/* The same letterhead the invoice and receipt carry, logo and all —
+            this document was printing the org's name in a plain header while the
+            invoice printed its mark. */}
+        <Masthead
+          orgName={props.orgName}
+          lines={[props.projectName, props.projectLocation]}
+          docType="STATEMENT"
+          docNumber={props.number}
+          logo={props.logo}
+        />
+        <View style={styles.accentRule} />
 
         {/* Under the masthead, before the terms. A buyer's statement is the one
             document they keep, and it described a building they had never seen a
