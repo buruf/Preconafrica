@@ -62,16 +62,38 @@ export function assertRole(actor: SessionActor, allowed: Role[]): void {
  * query the deactivation check was already making.
  */
 export async function requireUser(): Promise<SessionActor> {
+  const actor = await requireUserOrNull()
+  if (!actor) redirect('/login')
+  return actor
+}
+
+/**
+ * `requireUser` for callers that must answer rather than navigate.
+ *
+ * Identical authentication — the same session read, the same two database
+ * checks, in the same order — but it returns null where `requireUser`
+ * redirects. An API route cannot usefully bounce a fetch to /login: the caller
+ * is an `<a>` to a PDF or an XHR, and a 307 to an HTML page is not an answer.
+ * It gets a 401.
+ *
+ * This exists so that "authenticated" means one thing in this app. The
+ * documents route used to call `auth()` directly and check only that a session
+ * existed, which quietly exempted it from both revocation guards — a stolen
+ * JWT kept pulling contracts and receipts for the full seven-day `maxAge`
+ * after the password behind it was changed. Every entry point authenticates
+ * through this module now; nothing outside it should call `auth()`.
+ */
+export async function requireUserOrNull(): Promise<SessionActor | null> {
   const session = await auth()
-  if (!session?.user?.id) redirect('/login')
+  if (!session?.user?.id) return null
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
     select: { disabledAt: true, passwordChangedAt: true }
   })
-  if (!user || user.disabledAt !== null) redirect('/login')
+  if (!user || user.disabledAt !== null) return null
   if (sessionOutdatedByPasswordChange(user.passwordChangedAt, session.user.tokenIssuedAt)) {
-    redirect('/login')
+    return null
   }
 
   return {
