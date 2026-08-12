@@ -109,10 +109,53 @@ describe('checkImageUrl', () => {
     expect(checkImageUrl(long).ok).toBe(false)
   })
 
-  it('ignores a trailing dot on the host, which is the same host', () => {
+  it('ignores trailing dots on the host, however many, which is the same host', () => {
     // `localhost.` resolves exactly as `localhost` does, so the check has to
-    // normalise it away rather than treat it as an unfamiliar public name.
+    // normalise it away rather than treat it as an unfamiliar public name. The
+    // second case is the bug: stripping one dot left `localhost..` looking like
+    // an unfamiliar public label, and only the resolver stood between it and a
+    // request to loopback.
     expect(checkImageUrl('https://localhost./a.png').ok).toBe(false)
+    expect(checkImageUrl('https://localhost../a.png').ok).toBe(false)
+    expect(checkImageUrl('https://db.internal.../a.png').ok).toBe(false)
+  })
+
+  it('fetches the same name it checked, with the dots gone from both', () => {
+    // The rule this pins: the URL that gets stored and requested must carry the
+    // normalised host, not the one the admin pasted. Otherwise DNS is asked
+    // about one name and `fetch` is handed another.
+    const verdict = checkImageUrl('https://cdn.example.com../a.png')
+
+    expect(verdict.ok).toBe(true)
+    if (!verdict.ok) return
+    expect(verdict.hostname).toBe('cdn.example.com')
+    expect(verdict.url).toBe('https://cdn.example.com/a.png')
+  })
+
+  it('refuses the alternate IPv4 spellings, as literals rather than as names', () => {
+    // The WHATWG parser collapses each of these into a dotted quad before the
+    // guard sees it (see `parseIPv4`), so they are caught by the range rules and
+    // never reach DNS. Pinned here because the comment on that function used to
+    // claim the opposite, and the claim was load-bearing.
+    for (const url of [
+      'https://2130706433/x.png', // → 127.0.0.1
+      'https://0x7f000001/x.png', // → 127.0.0.1
+      'https://127.1/x.png', // → 127.0.0.1
+      'https://0177.0.0.1/x.png', // → 127.0.0.1 (octal is honoured)
+      'https://0/x.png' // → 0.0.0.0
+    ]) {
+      const verdict = checkImageUrl(url)
+      expect(verdict.ok, `${url} must be refused`).toBe(false)
+    }
+
+    // And the counter-case, which is why the guard cannot simply blacklist the
+    // shapes: 010 is octal 8, so this really is the public address 8.0.0.1 and
+    // not 10.0.0.1. Accepted, and normalised to what it actually is.
+    const octal = checkImageUrl('https://010.0.0.1/x.png')
+    expect(octal.ok).toBe(true)
+    if (!octal.ok) return
+    expect(octal.hostname).toBe('8.0.0.1')
+    expect(octal.hostIsAddress).toBe(true)
   })
 
   it('exposes the same verdict as a boolean for callers that only need one', () => {
@@ -132,15 +175,41 @@ describe('isBlockedAddress', () => {
       '0.0.0.0',
       '100.64.0.1', // carrier-grade NAT
       '224.0.0.1', // multicast
+      '192.0.0.1', // 192.0.0.0/24 protocol assignments
+      '198.18.0.1', // 198.18.0.0/15 benchmarking
+      '198.19.255.254',
+      '192.0.2.5', // TEST-NET-1
+      '198.51.100.5', // TEST-NET-2
+      '203.0.113.5', // TEST-NET-3
       '::1',
       '::',
       'fc00::1',
       'fdff::1',
       'fe80::abcd',
-      'ff02::1'
+      'ff02::1',
+      // NAT64: a gateway forwards the embedded IPv4 for you, so the prefix is a
+      // route to the metadata endpoint on any network that runs one.
+      '64:ff9b::a9fe:a9fe',
+      '64:ff9b::7f00:1',
+      '64:ff9b::',
+      '2002::1', // 6to4, whose embedded relay address is an IPv4 forwarder
+      '2002:5db8:c0a8::1',
+      // RFC 2765 IPv4-translated — the 0xffff one hextet earlier than the mapped
+      // form, which is exactly the kind of near-miss a hand-written check drops.
+      '::ffff:0:a9fe:a9fe',
+      '::ffff:0:7f00:1'
     ]) {
       expect(isBlockedAddress(address), `${address} must be blocked`).toBe(true)
     }
+  })
+
+  it('judges the IPv4 inside a translated address on its merits, not the prefix', () => {
+    // ::ffff:0:0/96 is blocked for what it *carries*, so a public quad inside it
+    // stays allowed — the rule is the embedded range, the same as for the mapped
+    // form. Getting this wrong in the safe direction would still be a bug: it
+    // would mean the range table had been replaced by a prefix blacklist.
+    expect(isBlockedAddress('::ffff:0:5db8:d822')).toBe(false) // 93.184.216.34
+    expect(isBlockedAddress('::ffff:93.184.216.34')).toBe(false)
   })
 
   it('allows ordinary public addresses', () => {
@@ -167,9 +236,13 @@ describe('isAddressLiteral', () => {
     expect(isAddressLiteral('10.0.0.1')).toBe(true)
     expect(isAddressLiteral('fc00::1')).toBe(true)
     expect(isAddressLiteral('cdn.example.com')).toBe(false)
-    // Not a dotted quad in the strict sense, so it is treated as a name — and
-    // DNS resolution is what then decides it (see the module comment).
+    // Not a dotted quad in the strict sense, so *as a bare string* it is not a
+    // literal. It never arrives as one: from a URL the parser has already turned
+    // it into 127.0.0.1 (see `parseIPv4`), and from a DNS answer a resolver
+    // returns dotted quads. A string this function cannot classify is handed to
+    // `isBlockedAddress`, which blocks it.
     expect(isAddressLiteral('2130706433')).toBe(false)
+    expect(isBlockedAddress('2130706433')).toBe(true)
   })
 })
 

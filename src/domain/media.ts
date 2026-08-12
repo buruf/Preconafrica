@@ -35,7 +35,7 @@ export interface ImageUrlAccepted {
   ok: true
   /** Normalised (`URL.toString()`) — this is what gets stored and rendered. */
   url: string
-  /** Lower-cased, brackets and any trailing dot stripped. Ready for DNS. */
+  /** Lower-cased, brackets and all trailing dots stripped. Ready for DNS. */
   hostname: string
   /**
    * True when the host is an IP literal, which `checkImageUrl` has already
@@ -57,15 +57,32 @@ const BLOCKED_HOST_SUFFIXES = ['.local', '.internal', '.localhost', '.home.arpa'
 const BLOCKED_HOSTS = ['localhost', 'ip6-localhost', 'ip6-loopback']
 
 /**
- * Parses dotted-quad IPv4 and nothing else. Deliberately strict: no octal
- * (`0177.0.0.1`), no decimal (`2130706433`), no short forms (`10.1`) — all of
- * which browsers and `inet_aton` accept as loopback or private addresses and
- * all of which a naive `split('.')` check waves through. Anything that is not
- * exactly four plain decimal octets is not an IPv4 literal as far as this
- * module is concerned, and therefore falls to the hostname path, where DNS
- * resolution catches it: Node's resolver applies the same strictness, so
- * `0177.0.0.1` either fails to resolve or resolves to an address that
- * `isBlockedAddress` then judges on its merits.
+ * Parses dotted-quad IPv4 and nothing else: exactly four plain decimal octets.
+ *
+ * The alternate IPv4 spellings — decimal (`2130706433`), hex (`0x7f000001`),
+ * octal (`0177.0.0.1`), short forms (`127.1`) — never reach this function from
+ * a URL, because the WHATWG URL parser has already collapsed them into a dotted
+ * quad by the time `checkImageUrl` looks at `url.hostname`. Measured, on the
+ * Node this runs on:
+ *
+ *   https://2130706433/  → hostname 127.0.0.1
+ *   https://0x7f000001/  → hostname 127.0.0.1
+ *   https://127.1/       → hostname 127.0.0.1
+ *   https://0177.0.0.1/  → hostname 127.0.0.1   (octal *is* honoured)
+ *   https://010.0.0.1/   → hostname 8.0.0.1     (010 octal = 8, so this is a
+ *                                                public address, not 10.0.0.1)
+ *
+ * So the loopback forms are caught as literals by the range rules, not by DNS.
+ * An earlier version of this comment claimed they "fall to the hostname path,
+ * where DNS resolution catches it" — that is false, and worth naming: the guard
+ * is safe for a different reason than it said, and a wrong "why" is what lets a
+ * future simplification past review.
+ *
+ * The strictness still matters, and this is why: `isBlockedAddress` is *also*
+ * fed raw DNS answers by the fetch wrapper, and those are not URL-normalised.
+ * Anything this function cannot read as four decimal octets is handed on to
+ * `parseIPv6`, and if that fails too the address is blocked outright — a
+ * resolver answer no one can classify is not evidence of safety.
  */
 function parseIPv4(host: string): number[] | null {
   const parts = host.split('.')
@@ -159,9 +176,11 @@ export function isAddressLiteral(host: string): boolean {
  * The range rules, applied to one address — whether it came out of the URL as a
  * literal or out of a DNS answer. Blocks loopback, link-local (the cloud
  * metadata endpoint lives at 169.254.169.254), RFC1918 private space,
- * unique-local IPv6, the unspecified addresses, carrier-grade NAT, and
- * multicast/reserved space. Anything unparseable is blocked too: a guard that
- * cannot classify an address must not wave it through.
+ * unique-local IPv6, the unspecified addresses, carrier-grade NAT, the
+ * IPv6 transition prefixes that carry an IPv4 destination inside them, the
+ * documentation/benchmark ranges, and multicast/reserved space. Anything
+ * unparseable is blocked too: a guard that cannot classify an address must not
+ * wave it through.
  */
 export function isBlockedAddress(address: string): boolean {
   const host = address.trim().toLowerCase().replace(/^\[|\]$/g, '').split('%')[0]
@@ -180,6 +199,23 @@ export function isBlockedAddress(address: string): boolean {
       // `::` and `::1` themselves are handled below, not as 0.0.0.0/0.0.0.1.
       if (!(v6[5] === 0 && v6[6] === 0 && v6[7] <= 1)) return isBlockedIPv4(embedded)
     }
+
+    // ::ffff:0:0/96 — RFC 2765 IPv4-*translated* (as distinct from the mapped
+    // form above: the 0xffff sits one hextet earlier). Same story, same rule:
+    // the last 32 bits are an IPv4 destination, so the IPv4 rules judge them.
+    if (v6.slice(0, 4).every((h) => h === 0) && v6[4] === 0xffff && v6[5] === 0) {
+      return isBlockedIPv4([v6[6] >> 8, v6[6] & 0xff, v6[7] >> 8, v6[7] & 0xff])
+    }
+
+    // 64:ff9b::/96 — the NAT64 well-known prefix. A NAT64 gateway forwards the
+    // embedded IPv4 address for you, which makes it a route to 169.254.169.254
+    // on any network that runs one. The whole prefix is refused rather than the
+    // embedded quad judged: nothing legitimate serves an image from it.
+    if (v6[0] === 0x0064 && v6[1] === 0xff9b && v6.slice(2, 6).every((h) => h === 0)) return true
+
+    // 2002::/16 — 6to4. Bits 16-47 are an embedded IPv4 relay address, and a
+    // 6to4 relay is the same kind of forwarder as a NAT64 gateway.
+    if (v6[0] === 0x2002) return true
 
     if (v6.every((h) => h === 0)) return true // ::  (unspecified)
     if (v6.slice(0, 7).every((h) => h === 0) && v6[7] === 1) return true // ::1 loopback
@@ -201,6 +237,13 @@ function isBlockedIPv4(o: number[]): boolean {
   if (o[0] === 192 && o[1] === 168) return true // 192.168.0.0/16 private
   if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true // 100.64.0.0/10 CGNAT
   if (o[0] === 192 && o[1] === 0 && o[2] === 0) return true // 192.0.0.0/24 protocol assignments
+  if (o[0] === 198 && (o[1] === 18 || o[1] === 19)) return true // 198.18.0.0/15 benchmarking
+  // The three documentation ranges (RFC 5737). Not routable, so a name that
+  // resolves into one is either a misconfiguration or someone testing the guard;
+  // either way there is no image there and a request should not be made.
+  if (o[0] === 192 && o[1] === 0 && o[2] === 2) return true // 192.0.2.0/24   TEST-NET-1
+  if (o[0] === 198 && o[1] === 51 && o[2] === 100) return true // 198.51.100.0/24 TEST-NET-2
+  if (o[0] === 203 && o[1] === 0 && o[2] === 113) return true // 203.0.113.0/24  TEST-NET-3
   if (o[0] >= 224) return true // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
   return false
 }
@@ -242,7 +285,10 @@ export function checkImageUrl(raw: string): ImageUrlVerdict {
     return { ok: false, reason: 'Image URLs must not contain a username or password.' }
   }
 
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+  // *All* trailing dots, not one. `localhost.` and `localhost..` both name
+  // exactly what `localhost` names, and stripping a single dot left the second
+  // form looking like an unfamiliar public label to the string blocklist below.
+  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
   if (hostname === '') return { ok: false, reason: 'That URL has no host.' }
 
   if (BLOCKED_HOSTS.includes(hostname) || BLOCKED_HOST_SUFFIXES.some((s) => hostname.endsWith(s))) {
@@ -259,6 +305,19 @@ export function checkImageUrl(raw: string): ImageUrlVerdict {
       reason: 'That address is on a private or loopback network. Use a public image URL.'
     }
   }
+
+  // The normalised name goes back onto the URL, so the name that was checked
+  // and resolved and the name that is fetched are byte-identical. Stripping the
+  // dots for the check alone left the wrapper resolving `localhost` and then
+  // requesting `localhost..` — two names that happen to agree today, and a
+  // discrepancy no one should have to reason about tomorrow. (An IPv6 literal
+  // carries brackets and no trailing dot, so this never rewrites one; a host of
+  // nothing but dots was already refused above, and the setter would reject the
+  // empty string anyway.) Compared against the dot-stripped host rather than
+  // against `hostname` itself: `hostname` also has the IPv6 brackets removed,
+  // and feeding `::1` back to the setter is not the same thing as `[::1]`.
+  const dotless = url.hostname.replace(/\.+$/, '')
+  if (dotless !== url.hostname) url.hostname = dotless
 
   return { ok: true, url: url.toString(), hostname, hostIsAddress }
 }
