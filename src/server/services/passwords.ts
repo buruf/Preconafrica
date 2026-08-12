@@ -33,14 +33,21 @@ const RESET_THROTTLE_MS = 60 * 1000
  * The base for the link in the email. Absolute, because it is clicked from a
  * mail client that has no origin to resolve against.
  *
- * A missing NEXTAUTH_URL degrades to a relative path rather than throwing, and
- * that is not laziness: throwing here would fail only for addresses that exist
- * and are not throttled, which hands an enumeration oracle to anyone who finds
- * the app misconfigured. A broken link in an email is a bug; a 500 that means
+ * Both spellings are read. `NEXTAUTH_URL` is what this app has always set and
+ * what is configured in Vercel today; `AUTH_URL` is what next-auth v5 prefers,
+ * and what a fresh deployment is likelier to be given. Reading only one of
+ * them means an environment that sets the other mails relative links to
+ * everybody — a total failure of the reset flow that no test catches, because
+ * the variable is present under the name the tests use.
+ *
+ * A missing value degrades to a relative path rather than throwing, and that
+ * is not laziness: throwing here would fail only for addresses that exist and
+ * are not throttled, which hands an enumeration oracle to anyone who finds the
+ * app misconfigured. A broken link in an email is a bug; a 500 that means
  * "yes, that account exists" is a vulnerability.
  */
 function resetUrlFor(rawToken: string): string {
-  const base = (process.env.NEXTAUTH_URL ?? '').replace(/\/+$/, '')
+  const base = (process.env.NEXTAUTH_URL ?? process.env.AUTH_URL ?? '').replace(/\/+$/, '')
   return `${base}/reset-password?token=${rawToken}`
 }
 

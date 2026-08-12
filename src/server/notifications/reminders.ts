@@ -125,7 +125,11 @@ export async function runReminderSweep(asOf: Date) {
   })
 
   const jobs = planReminders(sales, asOf)
-  const baseUrl = process.env.NEXTAUTH_URL ?? ''
+  // Both spellings, for the reason spelled out over `resetUrlFor` in
+  // services/passwords.ts: next-auth v5 prefers AUTH_URL, this app has always
+  // set NEXTAUTH_URL, and reading one name only means whichever environment
+  // sets the other mails links that go nowhere.
+  const baseUrl = process.env.NEXTAUTH_URL ?? process.env.AUTH_URL ?? ''
   const tally = { sent: 0, skipped: 0, failed: 0 }
 
   // Org names are looked up once for every distinct org touched by today's
