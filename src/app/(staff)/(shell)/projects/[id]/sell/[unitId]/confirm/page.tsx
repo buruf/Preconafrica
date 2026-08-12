@@ -6,6 +6,7 @@ import { MarkupOverrideSchema, PlanSelectionSchema, previewSchedule } from '@/se
 import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
 import { formatMinor, toMinor } from '@/domain/currency'
 import { Card, ErrorText, PageHeader } from '@/components/ui'
+import { UnitImagery } from '@/components/media'
 import { ConfirmForm } from './ConfirmForm'
 
 // This page's form submits to createStaffSaleAction, which writes the sale, its
@@ -170,6 +171,20 @@ export default async function ConfirmSalePage({
         title="Confirm the sale"
         subtitle={`${buyer.fullName} · unit ${unit.name} · ${unit.project.name}`}
       />
+
+      {/* The same block as step 1, at the point of commitment. A buyer about to
+          sign should be looking at what they are signing for, not only at the
+          money — and if there is no plan on file, the placeholder says so
+          before they commit rather than after. */}
+      <Card className="mb-4">
+        <UnitImagery
+          unitName={unit.name}
+          projectName={unit.project.name}
+          layoutImageUrl={unit.layoutImageUrl}
+          renderImageUrls={unit.renderImageUrls}
+          heading="What you are buying"
+        />
+      </Card>
 
       <Card className="mb-4">
         <dl className="grid grid-cols-2 gap-y-2 text-sm">

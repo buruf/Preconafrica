@@ -27,10 +27,13 @@ function IssueButton() {
  */
 export function InvoiceControl({
   scheduleEntryId,
-  documentId
+  documentId,
+  /** Server-decided, and a boolean rather than a `bigint` — see the staff twin. */
+  hasPayment
 }: {
   scheduleEntryId: string
   documentId: string | null
+  hasPayment: boolean
 }) {
   const [error, formAction] = useFormState(issueOwnInvoiceAction, undefined)
 
@@ -42,6 +45,17 @@ export function InvoiceControl({
       >
         Invoice
       </Link>
+    )
+  }
+
+  // The absence is explained rather than mysterious: a buyer who has not paid
+  // anything toward this month sees why there is nothing to download, not a
+  // button that fails.
+  if (!hasPayment) {
+    return (
+      <p className="inline-flex min-h-11 items-center text-xs text-slate-500">
+        Invoice available once a payment is recorded
+      </p>
     )
   }
 

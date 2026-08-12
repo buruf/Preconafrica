@@ -50,6 +50,14 @@ export function NewProjectForm() {
 
           <Field label="Expected completion" name="expectedCompletion" type="date" required />
 
+          <Field
+            label="Building photo URL"
+            name="heroImageUrl"
+            type="url"
+            placeholder="https://…/sunrise-heights.jpg"
+            hint="Optional — an https link to a photo or render of the building. It heads the inventory page and the buyer's statement, and can be added later from that page."
+          />
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             <Field label="Floors" name="floors" type="number" required defaultValue={4} />
             <Field label="Units / floor" name="unitsPerFloor" type="number" required defaultValue={6} />

@@ -1,11 +1,20 @@
 import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
+import { Masthead } from '@/server/pdf/Masthead'
+import type { PdfImage } from '@/server/media/images'
 import { formatMinor } from '@/domain/currency'
 import { scheduleEntryLabel } from '@/domain/schedule'
 
 export interface ReceiptProps {
   number: string
   orgName: string
+  /**
+   * The organisation's logo as bytes, fetched through the SSRF guard before the
+   * render begins — never a URL. Null falls back to the bordered initials in the
+   * same 46×46 slot. See `MastheadProps.logo`; a receipt is proof of payment, and
+   * proof on unbranded paper is worth less than proof on the developer's own.
+   */
+  logo: PdfImage | null
   projectName: string
   unitName: string
   buyerName: string
@@ -27,16 +36,17 @@ export function ReceiptDocument(props: ReceiptProps) {
   return (
     <Document>
       <Page size="A4" style={styles.page}>
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.orgName}>{props.orgName}</Text>
-            <Text style={styles.muted}>{props.projectName}</Text>
-          </View>
-          <View>
-            <Text style={styles.docTitle}>RECEIPT</Text>
-            <Text style={styles.muted}>{props.number}</Text>
-          </View>
-        </View>
+        {/* The same letterhead the invoice and statement carry. A receipt is the
+            document a buyer waves at a site office, and it was the one going out
+            with no mark on it. */}
+        <Masthead
+          orgName={props.orgName}
+          lines={[props.projectName]}
+          docType="RECEIPT"
+          docNumber={props.number}
+          logo={props.logo}
+        />
+        <View style={styles.accentRule} />
 
         {props.voided ? (
           <Text style={styles.void}>VOID — {props.voidReason ?? 'this payment was reversed'}</Text>

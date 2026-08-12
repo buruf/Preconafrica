@@ -6,6 +6,7 @@ import { isSupportedCurrency, toMinor } from '@/domain/currency'
 import { generateUnitNames, UnitPatternError } from '@/domain/units'
 import { percentToBps } from '@/domain/schedule'
 import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
+import { ImageUrlField } from '@/server/services/media'
 
 const MAX_UNITS = 2000
 
@@ -24,6 +25,11 @@ export const CreateProjectSchema = z
     unitsPerFloor: z.coerce.number().int().min(1).max(100),
     startFloor: z.coerce.number().int().min(0).max(200),
     namingPattern: z.string().min(1),
+    // Optional, and blank is the ordinary case: a developer creating a project
+    // rarely has the photo to hand at that moment. `.default('')` so a form that
+    // omits the field entirely still parses (the field parses '' to null), which
+    // keeps every existing caller and test working unchanged.
+    heroImageUrl: ImageUrlField.default(''),
     defaultBedrooms: z.coerce.number().int().min(0).max(10),
     defaultSizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE),
     defaultPrice: moneyString('Price'),
@@ -135,6 +141,7 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
         unitsPerFloor: input.unitsPerFloor,
         startFloor: input.startFloor,
         namingPattern: input.namingPattern,
+        heroImageUrl: input.heroImageUrl,
         installmentMarkupBps,
         reminderDaysBefore: input.reminderDaysBefore,
         overdueNoticeDaysAfter: input.overdueNoticeDaysAfter
@@ -156,6 +163,37 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
   })
 
   return { id: project.id, unitCount: drafts.length }
+}
+
+/**
+ * The building photo, set after the fact.
+ *
+ * A whole project-settings surface is not what this needs — there is no
+ * project-edit page today and inventing one to hold a single field would be the
+ * wrong size of change. But without *some* edit path a hero URL could only ever
+ * be set at creation, which means every project that already exists could never
+ * have a photo. So: one field, one action, ADMIN only, on the page an admin is
+ * already looking at when they think about the building.
+ */
+export const UpdateProjectImagerySchema = z.object({ heroImageUrl: ImageUrlField })
+
+export type UpdateProjectImageryInput = z.infer<typeof UpdateProjectImagerySchema>
+
+export async function updateProjectImagery(
+  actor: SessionActor,
+  projectId: string,
+  input: UpdateProjectImageryInput
+) {
+  assertRole(actor, ['ADMIN'])
+
+  // Org-scoped, and scoped in the write itself rather than by a read-then-write:
+  // `updateMany` with the orgId in the predicate cannot be raced into touching
+  // another tenant's project between the check and the update.
+  const result = await prisma.project.updateMany({
+    where: { id: projectId, orgId: actor.orgId },
+    data: { heroImageUrl: input.heroImageUrl }
+  })
+  if (result.count === 0) throw new ServiceError('Project not found', 'NOT_FOUND')
 }
 
 export async function listProjects(actor: SessionActor) {

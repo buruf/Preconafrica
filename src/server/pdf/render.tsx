@@ -2,11 +2,13 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { prisma } from '@/server/db'
 import { ServiceError } from '@/server/services/errors'
 import { InvoiceDocument } from '@/server/pdf/InvoiceDocument'
+import { buildInvoicePaymentRows } from '@/server/pdf/invoice-payments'
 import { ReceiptDocument } from '@/server/pdf/ReceiptDocument'
 import { StatementDocument } from '@/server/pdf/StatementDocument'
 import { deriveStatus } from '@/domain/status'
 import { computeMarkupMinor } from '@/domain/schedule'
 import { summariseSale } from '@/server/services/sales'
+import { fetchGuardedImages, toPdfImage } from '@/server/media/images'
 
 /**
  * Bytes are regenerated on demand rather than stored: payments are immutable
@@ -25,7 +27,7 @@ export async function renderDocumentPdf(
   const doc = await prisma.document.findFirst({
     where: { id: documentId, orgId },
     include: {
-      org: { select: { name: true } },
+      org: { select: { name: true, logoUrl: true } },
       sale: {
         include: {
           project: true,
@@ -41,12 +43,74 @@ export async function renderDocumentPdf(
   if (!doc) throw new ServiceError('Document not found', 'NOT_FOUND')
 
   const { sale } = doc
-  const summary = summariseSale(sale, new Date())
+  // One instant for the whole render, the same way the pages do it: every
+  // derived status and the summary must agree on "now", or a row could be
+  // stamped PENDING while a total above it was computed a heartbeat later as
+  // OVERDUE.
+  const asOf = new Date()
+  const summary = summariseSale(sale, asOf)
   const filename = `${doc.number}.pdf`
+
+  // Every image this document might carry, fetched once, concurrently, *before*
+  // any rendering starts. Three reasons it is here and not inside a component:
+  // @react-pdf's render is synchronous and would otherwise reach out to the
+  // network mid-layout; a URL handed straight to `Image` bypasses the SSRF guard
+  // entirely; and the two fetches are independent, so they should cost one
+  // round trip's latency rather than two.
+  //
+  // The logo is fetched for every type, because all three carry the same
+  // masthead — see `Masthead`. It used to be fetched for INVOICE only, which
+  // left the developer's letterhead off the statement a buyer keeps and off
+  // every receipt while a comment in `Masthead` said the opposite.
+  //
+  // The hero photo is still narrowed to the statement, and that narrowing is the
+  // reason this is a per-type map rather than an unconditional fetch: it is the
+  // only document with a band to put a building in, and up to five seconds of
+  // timeout for an image nothing renders is latency a buyer pays for nothing. A
+  // null URL short-circuits before any network call, so an org with no logo set
+  // costs nothing either. `toPdfImage` then applies the document-size budget and
+  // the PNG/JPEG-only rule; anything it rejects becomes null, which every
+  // consumer below already renders as its placeholder.
+  const fetched = await fetchGuardedImages({
+    logo: doc.org.logoUrl,
+    hero: doc.type === 'STATEMENT' ? sale.project.heroImageUrl : null
+  })
+  const logo = toPdfImage(fetched.logo)
+  const heroImage = toPdfImage(fetched.hero)
 
   if (doc.type === 'INVOICE') {
     const entry = doc.scheduleEntry
     if (!entry) throw new ServiceError('Invoice is missing its installment', 'NOT_FOUND')
+
+    // The payments the invoice itemises. Loaded from the allocations rather than
+    // from the sale's payments, because what belongs on this invoice is what
+    // landed on *this* installment — a payment that spilled over from the
+    // previous one appears here for the part that reached this entry, and for
+    // nothing more. Voiding a payment deletes its allocations, so a voided
+    // payment falls out of this query on its own with no filter to maintain (and
+    // none to get wrong: the entry's amountPaidMinor is recomputed in the same
+    // transaction, so the rows and the totals stay in step).
+    const allocations = await prisma.paymentAllocation.findMany({
+      where: { scheduleEntryId: entry.id },
+      include: { payment: true },
+      orderBy: { payment: { receivedAt: 'asc' } }
+    })
+
+    // `Payment.recordedByUserId` is a plain column with no relation, so the
+    // names cannot come along with the include. One batched query for the
+    // distinct ids, never one per row — an installment settled by a dozen small
+    // cash payments would otherwise cost a dozen round trips per download.
+    const recorderIds = [...new Set(allocations.map((a) => a.payment.recordedByUserId))]
+    const recorders = recorderIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: recorderIds }, orgId },
+          select: { id: true, fullName: true }
+        })
+      : []
+    const payments = buildInvoicePaymentRows(
+      allocations,
+      new Map(recorders.map((user) => [user.id, user.fullName]))
+    )
 
     return {
       filename,
@@ -55,11 +119,14 @@ export async function renderDocumentPdf(
           number={doc.number}
           issuedAt={doc.createdAt}
           orgName={doc.org.name}
+          logo={logo}
           projectName={sale.project.name}
+          projectLocation={sale.project.location}
           unitName={sale.unit.name}
           buyerName={sale.buyer.fullName}
           buyerPhone={sale.buyer.phone}
           buyerEmail={sale.buyer.email}
+          buyerAddress={sale.buyer.address}
           currency={sale.currency}
           sequence={entry.sequence}
           // The contract's months, not the schedule's rows: a deposit adds an
@@ -69,6 +136,10 @@ export async function renderDocumentPdf(
           dueDate={entry.dueDate}
           amountDueMinor={entry.amountDueMinor}
           amountPaidMinor={entry.amountPaidMinor}
+          // The same instant `summariseSale` above used, so the status mark on
+          // the invoice cannot disagree with any other figure on it.
+          status={deriveStatus(entry, asOf)}
+          payments={payments}
         />
       )
     }
@@ -84,6 +155,7 @@ export async function renderDocumentPdf(
         <ReceiptDocument
           number={doc.number}
           orgName={doc.org.name}
+          logo={logo}
           projectName={sale.project.name}
           unitName={sale.unit.name}
           buyerName={sale.buyer.fullName}
@@ -115,16 +187,17 @@ export async function renderDocumentPdf(
     throw new Error(`Unsupported document type: ${exhaustive as string}`)
   }
 
-  const asOf = new Date()
   return {
     filename,
     buffer: await renderToBuffer(
       <StatementDocument
         number={doc.number}
         orgName={doc.org.name}
+        logo={logo}
         projectName={sale.project.name}
         projectLocation={sale.project.location}
         unitName={sale.unit.name}
+        heroImage={heroImage}
         buyerName={sale.buyer.fullName}
         buyerPhone={sale.buyer.phone}
         currency={sale.currency}

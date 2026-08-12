@@ -6,6 +6,7 @@ import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { constraintTargetIncludes } from '@/server/services/units'
+import { ImageUrlField } from '@/server/services/media'
 
 export const CreateAgentSchema = z.object({
   fullName: z.string().trim().min(2, 'Name is required').max(120),
@@ -90,6 +91,47 @@ export async function listTeam(actor: SessionActor): Promise<TeamMember[]> {
     role: role as 'ADMIN' | 'AGENT',
     active: disabledAt === null
   }))
+}
+
+/**
+ * The organisation's own record, as far as anything an admin can edit goes —
+ * which today is the logo that heads every invoice.
+ *
+ * The team page is the only org-level admin surface there is, so this lives
+ * beside it rather than behind a settings section nobody would find. ADMIN only:
+ * the logo appears on documents sent to buyers, so it is the organisation's
+ * letterhead, not a per-agent preference.
+ */
+export interface OrganizationProfile {
+  name: string
+  logoUrl: string | null
+}
+
+export async function getOrganization(actor: SessionActor): Promise<OrganizationProfile> {
+  assertRole(actor, ['ADMIN'])
+  const org = await prisma.organization.findUnique({
+    where: { id: actor.orgId },
+    select: { name: true, logoUrl: true }
+  })
+  if (!org) throw new ServiceError('Organisation not found', 'NOT_FOUND')
+  return org
+}
+
+export const UpdateOrganizationSchema = z.object({ logoUrl: ImageUrlField })
+
+export type UpdateOrganizationInput = z.infer<typeof UpdateOrganizationSchema>
+
+export async function updateOrganizationLogo(
+  actor: SessionActor,
+  input: UpdateOrganizationInput
+) {
+  assertRole(actor, ['ADMIN'])
+  // Keyed by the session's orgId, never by anything a form sent — there is no
+  // parameter here that could point at another tenant.
+  await prisma.organization.update({
+    where: { id: actor.orgId },
+    data: { logoUrl: input.logoUrl }
+  })
 }
 
 export async function deactivateAgent(actor: SessionActor, userId: string) {

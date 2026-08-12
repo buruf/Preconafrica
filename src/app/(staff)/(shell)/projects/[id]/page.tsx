@@ -5,6 +5,8 @@ import { ServiceError } from '@/server/services/errors'
 import { bpsToPercentString } from '@/domain/schedule'
 import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
+import { MediaImage } from '@/components/media'
+import { HeroImageForm } from './HeroImageForm'
 import { UnitRow } from './UnitRow'
 
 const TONE = {
@@ -39,6 +41,24 @@ export default async function ProjectPage({ params }: { params: { id: string } }
           project.installmentMarkupBps
         )}%`}
       />
+
+      {/* The building, before the numbers. A developer's inventory page is the
+          one screen an agent shows a walk-in buyer, and it opened with three
+          counters and a list of unit codes. The placeholder is not a
+          consolation prize either — it is how an admin discovers that the photo
+          is the thing to go and set. */}
+      <div className="mb-5">
+        <MediaImage
+          kind="building"
+          src={project.heroImageUrl}
+          alt={`${project.name}, ${project.location}`}
+        />
+        {/* ADMIN only, and the only project-edit surface in the app — see
+            HeroImageForm for why it is one field rather than a settings page. */}
+        {actor.role === 'ADMIN' ? (
+          <HeroImageForm projectId={project.id} heroImageUrl={project.heroImageUrl} />
+        ) : null}
+      </div>
 
       <div className="mb-5 grid grid-cols-3 gap-3">
         {[
@@ -78,6 +98,11 @@ export default async function ProjectPage({ params }: { params: { id: string } }
                     // into the link that opens that sale, which is what makes
                     // /sales/[id] reachable for a buyer who is not overdue.
                     saleId: unit.saleId,
+                    // Plain strings, so they cross the RSC boundary as-is. The
+                    // row shows the layout as a thumbnail; the edit form below
+                    // it is where both are set.
+                    layoutImageUrl: unit.layoutImageUrl,
+                    renderImageUrls: unit.renderImageUrls,
                     // BigInt is not serializable across the RSC boundary, so
                     // formatting happens here on the server.
                     priceLabel: formatMinor(unit.priceMinor, project.currency),
