@@ -46,6 +46,20 @@ export interface PdfImage {
   format: 'png' | 'jpg'
 }
 
+/**
+ * Drops the rest of a response body, and swallows the failure to do so.
+ *
+ * `cancel()` on a stream that has already errored returns a *rejected* promise
+ * carrying that error, and an unhandled rejection is fatal to the process under
+ * Node's default `--unhandled-rejections=throw`. So every abandonment of a body
+ * goes through here: a module whose whole contract is "nothing throws, every
+ * failure is null" must not be able to take the server down while giving up on a
+ * download it had already decided to refuse.
+ */
+function discard(body: { cancel: () => Promise<void> } | null | undefined): void {
+  void body?.cancel().catch(() => {})
+}
+
 function refuse(url: string, reason: string): null {
   // One line, the reason first: this is the only trace of a rejected fetch, and
   // the URL is second because it may be long. Not an error — a refusal is the
@@ -131,31 +145,31 @@ export async function fetchGuardedImage(raw: string | null | undefined): Promise
   }
 
   if (response.status >= 300 && response.status < 400) {
-    void response.body?.cancel()
+    discard(response.body)
     return refuse(url, `redirected (${response.status}); paste the final image URL instead`)
   }
   if (!response.ok) {
-    void response.body?.cancel()
+    discard(response.body)
     return refuse(url, `HTTP ${response.status}`)
   }
 
   const contentType = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
   if (!contentType.startsWith('image/')) {
-    void response.body?.cancel()
+    discard(response.body)
     return refuse(url, `not an image (${contentType || 'no content-type'})`)
   }
   if (contentType === 'image/svg+xml') {
     // SVG is a document format, not a bitmap: it can carry script and external
     // references, no PDF renderer here decodes it, and an <img> would render it
     // with the page's privileges. Nothing needs it.
-    void response.body?.cancel()
+    discard(response.body)
     return refuse(url, 'SVG is not accepted; use PNG or JPEG')
   }
 
   // Trust the header only to fail fast — never to decide the body is small.
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
-    void response.body?.cancel()
+    discard(response.body)
     return refuse(url, `declares ${declared} bytes, over the ${MAX_IMAGE_BYTES}-byte cap`)
   }
 
@@ -171,14 +185,20 @@ export async function fetchGuardedImage(raw: string | null | undefined): Promise
       if (done) break
       total += value.byteLength
       if (total > MAX_IMAGE_BYTES) {
-        void reader.cancel()
+        discard(reader)
         return refuse(url, `body exceeded the ${MAX_IMAGE_BYTES}-byte cap`)
       }
       chunks.push(value)
     }
-  } catch {
-    void reader.cancel()
-    return refuse(url, 'transfer failed')
+  } catch (error) {
+    discard(reader)
+    // The timeout signal fires at this stage too, not only on the headers: a
+    // slowloris host that answers in 40ms and then dribbles the body aborts
+    // here. Calling that 'transfer failed' sent an admin looking for a broken
+    // CDN when the answer was "it is too slow", so the label distinguishes them.
+    const aborted =
+      error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+    return refuse(url, aborted ? 'timed out' : 'transfer failed')
   }
 
   if (total === 0) return refuse(url, 'zero-length body')
@@ -205,6 +225,34 @@ export async function fetchGuardedImages<K extends string>(
   >
 }
 
+/** The PNG eight-byte signature, per the spec's §5.2. */
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+/** SOI plus the first marker byte of the segment that always follows it. */
+const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff])
+
+/**
+ * What format these bytes actually are — read from the bytes, not from the
+ * header the host sent.
+ *
+ * `Content-Type` is a claim, and a wrong one has a specific, bad consequence
+ * here: @react-pdf hands a buffer to whichever decoder the format names, and a
+ * decoder given the wrong bytes produces an *empty box* on the masthead rather
+ * than an error. So a CDN serving a truncated JPEG, or an HTML error page, as
+ * `image/png` silently defeated the initials placeholder in precisely the case
+ * the placeholder exists for. Sniffing the magic bytes also means a host that
+ * mislabels a genuine JPEG as `image/png` embeds correctly, which is the other
+ * half of the point: the bytes are the truth either way.
+ *
+ * Two signatures and no more. Anything else — WebP, AVIF, TIFF, HTML, a
+ * zero-padded buffer — is not embeddable, and null means "print the
+ * placeholder".
+ */
+function sniffPdfImageFormat(bytes: Buffer): PdfImage['format'] | null {
+  if (bytes.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) return 'png'
+  if (bytes.subarray(0, JPEG_MAGIC.length).equals(JPEG_MAGIC)) return 'jpg'
+  return null
+}
+
 /**
  * Narrows a fetched image to something @react-pdf can decode, applying the
  * document-size cap. Returns null — meaning "print the placeholder" — for a
@@ -214,14 +262,15 @@ export async function fetchGuardedImages<K extends string>(
 export function toPdfImage(image: FetchedImage | null): PdfImage | null {
   if (!image) return null
 
-  const format =
-    image.contentType === 'image/png'
-      ? 'png'
-      : image.contentType === 'image/jpeg' || image.contentType === 'image/jpg'
-        ? 'jpg'
-        : null
+  const format = sniffPdfImageFormat(image.bytes)
   if (!format) {
-    console.warn(`[media] not embedding ${image.contentType}: PDFs carry PNG or JPEG only`)
+    // The declared type is in the message because it is the diagnosis: "says
+    // image/png" next to "is not PNG" tells an admin their CDN is lying, which
+    // is a different fix from "your logo is a WebP".
+    console.warn(
+      `[media] not embedding ${image.bytes.byteLength} bytes declared ${image.contentType}: ` +
+        'the bytes are neither PNG nor JPEG, which are the only formats a PDF here carries'
+    )
     return null
   }
 

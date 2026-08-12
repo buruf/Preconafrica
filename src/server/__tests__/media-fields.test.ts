@@ -3,7 +3,17 @@ import { ImageUrlField, RenderUrlsField, imageFieldFrom } from '@/server/service
 import { UpdateUnitSchema } from '@/server/services/units'
 import { UpdateProjectImagerySchema } from '@/server/services/projects'
 import { UpdateOrganizationSchema } from '@/server/services/team'
-import { fetchGuardedImage, toPdfImage } from '@/server/media/images'
+import { MAX_IMAGE_BYTES, fetchGuardedImage, fetchPdfImage, toPdfImage } from '@/server/media/images'
+
+/** A real PNG signature — the sniff reads the bytes, so fixtures must be honest. */
+const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
+/** SOI + the APP0 marker that follows it in any JFIF file. */
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46])
+/** What a CDN behind a misconfigured origin actually serves as `image/png`. */
+const HTML_ERROR_PAGE = Buffer.from('<!doctype html><title>502 Bad Gateway</title>', 'latin1')
+/** A PNG whose signature was cut short — one byte in, and no longer a PNG. */
+const TRUNCATED_PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a])
+const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBP')])
 
 /**
  * The form-facing half of the imagery work: what an admin's keystrokes become
@@ -143,23 +153,227 @@ describe('fetchGuardedImage', () => {
   })
 })
 
+/**
+ * The wrapper's *own* rules — the ones that only apply once a response exists,
+ * which the refusal test above can say nothing about because nothing reaches the
+ * network there. These are the four most likely to be broken by a future edit,
+ * so each gets a response built to trip exactly one of them.
+ *
+ * NETWORK DEPENDENCY, deliberate and explicit: `fetchGuardedImage` resolves the
+ * hostname through `node:dns` *before* it calls `fetch`, and stubbing `fetch`
+ * does not stub the resolver. So these use `example.com`, which must genuinely
+ * resolve to a public address for the test to reach the stub at all. On an
+ * offline or DNS-less CI box these fail at 'host does not resolve' — which is
+ * the same `null`, so the assertions still pass, but a reader chasing a related
+ * failure should know the resolution is real and the fetch is not.
+ */
+describe("fetchGuardedImage's response rules", () => {
+  const URL_UNDER_TEST = 'https://example.com/logo.png'
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  /** Stubs fetch to answer once with `response`, and reports whether it ran. */
+  function answerWith(response: Response) {
+    const fetchStub = vi.fn(async () => response)
+    vi.stubGlobal('fetch', fetchStub)
+    return fetchStub
+  }
+
+  function streamOf(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk)
+        controller.close()
+      }
+    })
+  }
+
+  it('refuses a redirect outright rather than following it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // Following would mean re-running the whole guard per hop; the cost of
+    // refusing is that an admin pastes the final URL. The hop here points at the
+    // metadata endpoint, which is what following would end up requesting.
+    const fetchStub = answerWith(
+      new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/' } })
+    )
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(fetchStub).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls.join(' ')).toMatch(/redirected \(302\)/)
+    warn.mockRestore()
+  })
+
+  it('refuses an HTML page, whatever it is served under', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    answerWith(
+      new Response(HTML_ERROR_PAGE, { status: 200, headers: { 'content-type': 'text/html' } })
+    )
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+  })
+
+  it('refuses SVG, which is a document format and not a bitmap', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // It can carry script and external references, and nothing here decodes it.
+    answerWith(
+      new Response('<svg xmlns="http://www.w3.org/2000/svg"/>', {
+        status: 200,
+        headers: { 'content-type': 'image/svg+xml' }
+      })
+    )
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(warn.mock.calls.join(' ')).toMatch(/SVG/)
+    warn.mockRestore()
+  })
+
+  it('stops an oversize body mid-stream when no Content-Length was declared', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // The point of the missing header: a host that declares nothing cannot be
+    // caught by the fast-path check, so the *streaming* cap is the only thing
+    // between this and 6MB in memory. A `Response` built from a stream carries
+    // no content-length, which is exactly the shape being tested.
+    const megabyte = new Uint8Array(1024 * 1024)
+    megabyte.set(PNG) // plausible enough to have got past the header checks
+    const chunks = Array.from({ length: 6 }, () => megabyte)
+    answerWith(
+      new Response(streamOf(chunks), { status: 200, headers: { 'content-type': 'image/png' } })
+    )
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(warn.mock.calls.join(' ')).toMatch(
+      new RegExp(`body exceeded the ${MAX_IMAGE_BYTES}-byte cap`)
+    )
+    warn.mockRestore()
+  })
+
+  it('refuses a 200 that carries no bytes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // A stream that opens and closes, rather than a null body: this is the
+    // `total === 0` branch, which is the one an empty file on a CDN produces.
+    answerWith(new Response(streamOf([]), { status: 200, headers: { 'content-type': 'image/png' } }))
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(warn.mock.calls.join(' ')).toMatch(/zero-length body/)
+    warn.mockRestore()
+  })
+
+  it('calls an abort during the body read a timeout, not a transfer failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // The slowloris shape: headers arrive promptly, so the timeout fires at the
+    // *body* stage — a different catch block from the one around `fetch`, and
+    // the one that used to report 'transfer failed'. An admin reading that went
+    // looking for a broken CDN when the answer was "your host is too slow".
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), {
+      name: 'TimeoutError'
+    })
+    const stalling = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(PNG)
+        controller.error(timeout)
+      }
+    })
+    answerWith(new Response(stalling, { status: 200, headers: { 'content-type': 'image/png' } }))
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    const logged = warn.mock.calls.join(' ')
+    expect(logged).toMatch(/timed out/)
+    expect(logged).not.toMatch(/transfer failed/)
+    warn.mockRestore()
+  })
+
+  it('still says transfer failed for a body that breaks for any other reason', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // A connection reset mid-body is not a timeout, and must not be relabelled
+    // as one — the point of the change is that the two are distinguishable.
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(Object.assign(new Error('socket hang up'), { name: 'Error' }))
+      }
+    })
+    answerWith(new Response(broken, { status: 200, headers: { 'content-type': 'image/png' } }))
+
+    await expect(fetchGuardedImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(warn.mock.calls.join(' ')).toMatch(/transfer failed/)
+    warn.mockRestore()
+  })
+
+  it('fetches a genuine PNG through every rule, so the refusals mean something', async () => {
+    // The control. Without it, every assertion above is satisfied by a wrapper
+    // that returns null unconditionally.
+    answerWith(new Response(PNG, { status: 200, headers: { 'content-type': 'image/png' } }))
+
+    const fetched = await fetchGuardedImage(URL_UNDER_TEST)
+    expect(fetched?.contentType).toBe('image/png')
+    expect(fetched?.bytes.equals(PNG)).toBe(true)
+  })
+
+  it('yields no PDF image when a declared image/png is not PNG bytes', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // The end-to-end version of the sniff: the wrapper accepts it (the header
+    // said image/png and the body is non-empty and under the cap), and the
+    // format resolution is what refuses it — so the masthead prints initials
+    // rather than the empty box a mis-decoded buffer would have drawn.
+    answerWith(
+      new Response(HTML_ERROR_PAGE, { status: 200, headers: { 'content-type': 'image/png' } })
+    )
+
+    await expect(fetchPdfImage(URL_UNDER_TEST)).resolves.toBeNull()
+    expect(warn.mock.calls.join(' ')).toMatch(/neither PNG nor JPEG/)
+    warn.mockRestore()
+  })
+})
+
 describe('toPdfImage', () => {
   afterEach(() => vi.restoreAllMocks())
 
-  it('maps the two formats a PDF can carry and refuses the rest', () => {
+  it('reads the format out of the bytes, not out of the Content-Type', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const bytes = Buffer.from([1, 2, 3])
 
-    expect(toPdfImage({ bytes, contentType: 'image/png' })).toEqual({ data: bytes, format: 'png' })
-    expect(toPdfImage({ bytes, contentType: 'image/jpeg' })).toEqual({ data: bytes, format: 'jpg' })
-    // WebP and friends are fetchable but not embeddable — placeholder, not crash.
-    expect(toPdfImage({ bytes, contentType: 'image/webp' })).toBeNull()
+    expect(toPdfImage({ bytes: PNG, contentType: 'image/png' })).toEqual({
+      data: PNG,
+      format: 'png'
+    })
+    expect(toPdfImage({ bytes: JPEG, contentType: 'image/jpeg' })).toEqual({
+      data: JPEG,
+      format: 'jpg'
+    })
     expect(toPdfImage(null)).toBeNull()
+  })
+
+  it('embeds a genuine JPEG a host mislabelled as image/png', () => {
+    // The other half of preferring bytes over headers: a wrong header must not
+    // cost a correct image. Declared png, is jpeg, embeds as jpg.
+    expect(toPdfImage({ bytes: JPEG, contentType: 'image/png' })).toEqual({
+      data: JPEG,
+      format: 'jpg'
+    })
+  })
+
+  it('refuses bytes that are not PNG or JPEG whatever the header claims', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    // The failure this pins: a CDN serving an HTML error page or a truncated
+    // file as image/png. @react-pdf hands the buffer to the decoder the format
+    // names, and a decoder given the wrong bytes draws an *empty box* — so
+    // trusting the header defeated the initials placeholder in exactly the case
+    // the placeholder exists for.
+    expect(toPdfImage({ bytes: HTML_ERROR_PAGE, contentType: 'image/png' })).toBeNull()
+    expect(toPdfImage({ bytes: TRUNCATED_PNG, contentType: 'image/png' })).toBeNull()
+    // WebP and friends are fetchable but not embeddable — placeholder, not crash.
+    expect(toPdfImage({ bytes: WEBP, contentType: 'image/webp' })).toBeNull()
+    // And a buffer too short to hold either signature must not read off the end.
+    expect(toPdfImage({ bytes: Buffer.from([0xff, 0xd8]), contentType: 'image/jpeg' })).toBeNull()
+    expect(toPdfImage({ bytes: Buffer.alloc(0), contentType: 'image/png' })).toBeNull()
   })
 
   it('drops an image too heavy for a buyer on mobile data', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const huge = { bytes: Buffer.alloc(400 * 1024), contentType: 'image/png' }
+    // Genuinely PNG-signed, so the size cap is what refuses it rather than the
+    // format sniff — the two rules have to be testable apart.
+    const huge = { bytes: Buffer.concat([PNG, Buffer.alloc(400 * 1024)]), contentType: 'image/png' }
     expect(toPdfImage(huge)).toBeNull()
   })
 })
