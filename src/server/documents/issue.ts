@@ -31,6 +31,14 @@ async function createDocument(
 }
 
 /**
+ * An invoice is an ordinary demand for payment: issuable for any installment on
+ * the schedule, whatever has or has not been paid against it. A bill is the
+ * thing you send *before* the money arrives, so gating it on an allocated
+ * payment made it impossible to ask for the one thing an invoice exists to ask
+ * for. The document that proves a payment is the receipt — `issueReceipt`
+ * below mints one inside the payment transaction, and it is the receipt, not
+ * this, that carries the method, the reference and the applied-to breakdown.
+ *
  * Idempotent: a second request for the same installment returns the first
  * invoice.
  *
@@ -67,26 +75,11 @@ export async function issueInvoice(actor: SessionActor, scheduleEntryId: string)
   })
   if (!entry) throw new ServiceError('Installment not found', 'NOT_FOUND')
 
-  // Before the gate below, deliberately. An invoice that was legitimately
-  // issued stays downloadable whatever happens to the money afterwards: voiding
-  // the payment that justified it takes the entry's paid amount back to zero,
-  // and re-checking here would turn a document the buyer already holds into a
-  // 404 on their next tap. Idempotency is about the document, not the balance.
+  // An invoice that was legitimately issued stays downloadable whatever happens
+  // to the money afterwards — the document a buyer already holds must not turn
+  // into a 404 on their next tap. Idempotency is about the document, not the
+  // balance, which is also why nothing about `amountPaidMinor` is read here.
   if (entry.document) return { documentId: entry.document.id }
-
-  // An invoice is a demand for the balance of something already part-settled —
-  // the product decision is that any allocated payment makes one issuable, and
-  // that nothing at all makes one meaningless. CONFLICT rather than VALIDATION:
-  // the request is well formed and the installment is really this caller's, so
-  // there is nothing to correct in the input. What refuses it is the state of
-  // the entry right now, which a recorded payment changes without the caller
-  // touching anything they sent.
-  if (entry.amountPaidMinor === 0n) {
-    throw new ServiceError(
-      'An invoice can be issued once a payment has been recorded against this installment.',
-      'CONFLICT'
-    )
-  }
 
   try {
     const doc = await prisma.$transaction((tx) =>

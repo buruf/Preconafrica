@@ -19,9 +19,11 @@ function Submit() {
  * point of commitment — only confirm it or go back — so the schedule that gets
  * written is the schedule that was quoted.
  *
- * `markupBps` is carried as a string or omitted entirely: an absent field means
- * "the project default", which is what the confirm page priced. Sending 0 in
- * its place would sign a fee-free contract that nobody agreed to.
+ * The fee fields are carried together or omitted entirely: an absent set means
+ * "the project default", which is what the confirm page priced. Sending a zero
+ * in their place would sign a fee-free contract that nobody agreed to. The mode
+ * always travels with its value, because a mode on its own would let the create
+ * action price against the wrong field.
  */
 export function ConfirmForm({
   unitId,
@@ -29,14 +31,19 @@ export function ConfirmForm({
   planType,
   deposit,
   termMonths,
-  markupBps
+  feeMode,
+  markupBps,
+  fixedFeeMinor
 }: {
   unitId: string
   buyerId: string
   planType: string
   deposit: string
   termMonths: number
+  feeMode: 'PERCENT' | 'FIXED' | null
   markupBps: number | null
+  /** Minor units as a string — a bigint may not cross into a client component. */
+  fixedFeeMinor: string | null
 }) {
   // Bound to the route's unit so a tampered hidden field cannot sign this
   // page's quoted terms against a different unit — the action cross-checks.
@@ -49,8 +56,12 @@ export function ConfirmForm({
       <input type="hidden" name="planType" value={planType} />
       <input type="hidden" name="deposit" value={deposit} />
       <input type="hidden" name="termMonths" value={termMonths} />
+      {feeMode === null ? null : <input type="hidden" name="feeMode" value={feeMode} />}
       {markupBps === null ? null : (
         <input type="hidden" name="markupBps" value={markupBps} />
+      )}
+      {fixedFeeMinor === null ? null : (
+        <input type="hidden" name="fixedFeeMinor" value={fixedFeeMinor} />
       )}
       <ErrorText>{error}</ErrorText>
       <Submit />

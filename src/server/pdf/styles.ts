@@ -166,12 +166,10 @@ export const styles = StyleSheet.create({
   statusOverdue: { color: '#b91c1c', borderColor: '#b91c1c' },
   statusPending: { color: '#475569', borderColor: FAINT },
 
-  // ── Payments table ────────────────────────────────────────────────────────
-  colPayDate: { width: '17%' },
-  colPayMethod: { width: '20%' },
-  colPayRef: { width: '25%' },
-  colPayBy: { width: '19%' },
-  colPayAmount: { width: '19%', textAlign: 'right' },
+  // ── The invoice's closing figures ─────────────────────────────────────────
+  // Scheduled, already paid, balance due. There is deliberately no payments
+  // table here any more: an invoice states the balance, and the itemised trail
+  // of dates, methods and references is the receipt's job.
   summaryRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2, marginTop: 6 },
   summaryTotal: {
     flexDirection: 'row',

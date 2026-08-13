@@ -1,24 +1,42 @@
 import { describe, expect, it } from 'vitest'
 import {
   BuyerRegistrationSchema,
+  FeeOverrideSchema,
   MarkupOverrideSchema,
   PlanSelectionSchema,
   createSale,
   previewSchedule,
-  resolveMarkupBps,
+  projectFeeConfig,
+  resolveInstallmentFee,
+  saleFeeConfig,
   summariseSale
 } from '@/server/services/sales'
 import { buildArrearsRows } from '@/server/services/arrears'
 import { constraintTargetIncludes } from '@/server/services/units'
 import { ServiceError } from '@/server/services/errors'
 import { AuthorizationError, type SessionActor } from '@/server/session'
-import { MAX_MARKUP_BPS, ScheduleError, generateSchedule, type PlanType } from '@/domain/schedule'
+import {
+  MAX_MARKUP_BPS,
+  NO_INSTALLMENT_FEE,
+  ScheduleError,
+  generateSchedule,
+  type InstallmentFeeConfig,
+  type PlanType
+} from '@/domain/schedule'
 
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 const day = (d: Date) => d.toISOString().slice(0, 10)
 /** JSON.stringify refuses BigInt outright, and these failure labels carry money. */
 const bigintReplacer = (_key: string, value: unknown) =>
   typeof value === 'bigint' ? value.toString() : value
+
+/** The two fee configs, spelled once — see the domain's schedule test. */
+const percent = (bps: number): InstallmentFeeConfig => ({ mode: 'PERCENT', bps, fixedMinor: 0n })
+const fixed = (fixedMinor: bigint): InstallmentFeeConfig => ({
+  mode: 'FIXED',
+  bps: 0,
+  fixedMinor
+})
 
 describe('BuyerRegistrationSchema', () => {
   const valid = {
@@ -70,7 +88,7 @@ describe('previewSchedule', () => {
       planType: 'INSTALLMENTS',
       priceMinor: 100_000n,
       depositMinor: 0n,
-      markupBps: 0,
+      fee: percent(0),
       months: 36,
       signedAt: utc(2026, 8, 9),
       ...over
@@ -83,7 +101,7 @@ describe('previewSchedule', () => {
     expect(result.monthlyMinor).toBe(2_777n)
     expect(result.finalMinor).toBe(2_805n)
     expect(result.totalMinor).toBe(100_000n)
-    expect(result.markupMinor).toBe(0n)
+    expect(result.feeMinor).toBe(0n)
   })
 
   it('reports the monthly figures for the months, not for the deposit', () => {
@@ -114,11 +132,11 @@ describe('previewSchedule', () => {
     // 88,000 is amortized over 36 months and the total owed is 108,000. A UI can
     // print "Installment charge: 8,000" without re-deriving it — and the buyer
     // can see why the total exceeds the price.
-    const result = preview({ depositMinor: 20_000n, markupBps: 1_000 })
+    const result = preview({ depositMinor: 20_000n, fee: percent(1_000) })
 
-    expect(result.markupMinor).toBe(8_000n)
+    expect(result.feeMinor).toBe(8_000n)
     expect(result.totalMinor).toBe(108_000n)
-    expect(result.totalMinor).toBe(100_000n + result.markupMinor)
+    expect(result.totalMinor).toBe(100_000n + result.feeMinor)
     // 88,000 / 36 = 2,444.44… → 2,444 a month, remainder on the last.
     expect(result.monthlyMinor).toBe(2_444n)
     expect(result.finalMinor).toBe(88_000n - 2_444n * 35n)
@@ -132,14 +150,14 @@ describe('previewSchedule', () => {
     expect(result.entries).toHaveLength(1)
     expect(result.monthlyMinor).toBeNull()
     expect(result.totalMinor).toBe(100_000n)
-    expect(result.markupMinor).toBe(0n)
+    expect(result.feeMinor).toBe(0n)
   })
 
   it('refuses to preview a markup it would never be able to write', () => {
     // The preview and createSale share generateSchedule precisely so a plan the
     // buyer is shown is a plan that can actually be signed.
-    expect(() => preview({ markupBps: 10_001 })).toThrow(ScheduleError)
-    expect(() => preview({ planType: 'FULL', months: 0, markupBps: 1_000 })).toThrow(ScheduleError)
+    expect(() => preview({ fee: percent(10_001) })).toThrow(ScheduleError)
+    expect(() => preview({ planType: 'FULL', months: 0, fee: percent(1_000) })).toThrow(ScheduleError)
   })
 })
 
@@ -207,7 +225,7 @@ describe('summariseSale', () => {
       planType: 'INSTALLMENTS',
       priceMinor: 100_000n,
       depositMinor: 20_000n,
-      markupBps: 1_000,
+      fee: percent(1_000),
       months: 36,
       signedAt: utc(2026, 8, 9)
     }).map((entry) => ({ ...entry, amountPaidMinor: 0n }))
@@ -312,7 +330,7 @@ describe('an unpaid deposit is arrears', () => {
     planType: 'INSTALLMENTS',
     priceMinor: 10_000_000n,
     depositMinor: 2_000_000n,
-    markupBps: 1_000,
+    fee: percent(1_000),
     months: 36,
     signedAt
   }).map((entry) => ({ ...entry, amountPaidMinor: 0n }))
@@ -502,11 +520,17 @@ describe('PlanSelectionSchema normalisation', () => {
   })
 })
 
-describe('resolveMarkupBps', () => {
+describe('resolveInstallmentFee', () => {
   // The installment charge is the developer's revenue. Who may set it is a
   // security control, and this is the only place it is decided — so it is
   // tested directly rather than through createSale, which needs a live Unit,
   // Buyer and transaction before it reaches this line.
+  //
+  // The table crosses both fee modes, because the second mode is a second way
+  // to waive the fee: a buyer who could post a zero flat fee has done the same
+  // damage as one posting 0 bps, and a buyer who could post a *mode* alone
+  // could swing a percentage project onto whatever its unused fixed column
+  // happens to hold. The whole config is therefore discarded as a unit.
   const actor = (role: SessionActor['role']): SessionActor => ({
     userId: `user_${role.toLowerCase()}`,
     orgId: 'org_1',
@@ -516,152 +540,311 @@ describe('resolveMarkupBps', () => {
     email: 'actor@example.com'
   })
 
-  const PROJECT_DEFAULT = 1_000
+  const PERCENT_PROJECT = percent(1_000)
+  const FIXED_PROJECT = fixed(250_000n)
 
   const cases: Array<{
     label: string
     role: SessionActor['role']
     planType: PlanType
-    markupBps?: number
-    expected: number
+    fee?: InstallmentFeeConfig
+    projectDefault: InstallmentFeeConfig
+    expected: InstallmentFeeConfig
   }> = [
+    // ── A BUYER may never move the charge, in any direction or either mode.
     {
-      // The attack this rule exists for: a buyer posting a forged markupBps=0
-      // to waive the fee they were quoted. It is discarded, not honoured.
-      label: 'a BUYER supplying 0 gets the project default anyway',
+      // The attack this rule exists for: a buyer posting a forged zero to waive
+      // the fee they were quoted. It is discarded, not honoured.
+      label: 'a BUYER supplying 0 bps gets the percentage project default anyway',
       role: 'BUYER',
       planType: 'INSTALLMENTS',
-      markupBps: 0,
-      expected: PROJECT_DEFAULT
+      fee: percent(0),
+      projectDefault: PERCENT_PROJECT,
+      expected: PERCENT_PROJECT
     },
     {
-      label: 'a BUYER cannot raise it either',
+      label: 'a BUYER cannot raise a percentage either',
       role: 'BUYER',
       planType: 'INSTALLMENTS',
-      markupBps: 5_000,
-      expected: PROJECT_DEFAULT
+      fee: percent(5_000),
+      projectDefault: PERCENT_PROJECT,
+      expected: PERCENT_PROJECT
     },
     {
-      label: 'an ADMIN may override it',
+      label: 'a BUYER supplying a zero flat fee gets the fixed project default anyway',
+      role: 'BUYER',
+      planType: 'INSTALLMENTS',
+      fee: fixed(0n),
+      projectDefault: FIXED_PROJECT,
+      expected: FIXED_PROJECT
+    },
+    {
+      // The mode-swap attack: a fixed-fee project whose unused bps column is 0
+      // would charge nothing at all if a buyer could flip the mode to PERCENT.
+      label: 'a BUYER cannot switch a fixed project onto a percentage',
+      role: 'BUYER',
+      planType: 'INSTALLMENTS',
+      fee: percent(0),
+      projectDefault: FIXED_PROJECT,
+      expected: FIXED_PROJECT
+    },
+    {
+      // And the reverse: a percentage project whose unused fixed column is 0.
+      label: 'a BUYER cannot switch a percentage project onto a flat fee',
+      role: 'BUYER',
+      planType: 'INSTALLMENTS',
+      fee: fixed(0n),
+      projectDefault: PERCENT_PROJECT,
+      expected: PERCENT_PROJECT
+    },
+
+    // ── Staff may override, including across modes.
+    {
+      label: 'an ADMIN may override a percentage',
       role: 'ADMIN',
       planType: 'INSTALLMENTS',
-      markupBps: 250,
-      expected: 250
+      fee: percent(250),
+      projectDefault: PERCENT_PROJECT,
+      expected: percent(250)
     },
     {
-      label: 'an ADMIN may override it down to zero',
+      label: 'an ADMIN may override a percentage down to zero',
       role: 'ADMIN',
       planType: 'INSTALLMENTS',
-      markupBps: 0,
-      expected: 0
+      fee: percent(0),
+      projectDefault: PERCENT_PROJECT,
+      expected: percent(0)
     },
     {
-      label: 'an AGENT may override it',
+      label: 'an AGENT may override a flat fee',
       role: 'AGENT',
       planType: 'INSTALLMENTS',
-      markupBps: 750,
-      expected: 750
+      fee: fixed(100_000n),
+      projectDefault: FIXED_PROJECT,
+      expected: fixed(100_000n)
     },
     {
-      label: 'an AGENT supplying nothing gets the project default',
+      label: 'an AGENT may sell a percentage project at a flat fee',
       role: 'AGENT',
       planType: 'INSTALLMENTS',
-      markupBps: undefined,
-      expected: PROJECT_DEFAULT
+      fee: fixed(100_000n),
+      projectDefault: PERCENT_PROJECT,
+      expected: fixed(100_000n)
     },
     {
-      label: 'an ADMIN supplying nothing gets the project default',
+      label: 'an ADMIN may sell a fixed project at a percentage',
       role: 'ADMIN',
       planType: 'INSTALLMENTS',
-      markupBps: undefined,
-      expected: PROJECT_DEFAULT
+      fee: percent(750),
+      projectDefault: FIXED_PROJECT,
+      expected: percent(750)
     },
-    // Nothing is financed on a full payment, so there is nothing to charge for
-    // — including when the project default would otherwise apply, which would
-    // die on generateSchedule's FULL-plan guard.
+
+    // ── Absent means "the project default", in whichever mode that is.
+    {
+      label: 'an AGENT supplying nothing gets the percentage project default',
+      role: 'AGENT',
+      planType: 'INSTALLMENTS',
+      fee: undefined,
+      projectDefault: PERCENT_PROJECT,
+      expected: PERCENT_PROJECT
+    },
+    {
+      label: 'an ADMIN supplying nothing gets the fixed project default',
+      role: 'ADMIN',
+      planType: 'INSTALLMENTS',
+      fee: undefined,
+      projectDefault: FIXED_PROJECT,
+      expected: FIXED_PROJECT
+    },
+
+    // ── Nothing is financed on a full payment, so there is nothing to charge
+    // for — including when the project default would otherwise apply, which
+    // would die on generateSchedule's FULL-plan guard.
     {
       label: 'a FULL plan is free of charge whatever staff ask for',
       role: 'ADMIN',
       planType: 'FULL',
-      markupBps: 5_000,
-      expected: 0
+      fee: percent(5_000),
+      projectDefault: PERCENT_PROJECT,
+      expected: NO_INSTALLMENT_FEE
     },
     {
-      label: 'a FULL plan ignores the project default too',
+      label: 'a FULL plan ignores a fixed project default too',
       role: 'AGENT',
       planType: 'FULL',
-      markupBps: undefined,
-      expected: 0
+      fee: undefined,
+      projectDefault: FIXED_PROJECT,
+      expected: NO_INSTALLMENT_FEE
     },
     {
-      label: "a FULL plan ignores a buyer's value as well",
+      label: "a FULL plan ignores a buyer's flat fee as well",
       role: 'BUYER',
       planType: 'FULL',
-      markupBps: 900,
-      expected: 0
+      fee: fixed(900n),
+      projectDefault: FIXED_PROJECT,
+      expected: NO_INSTALLMENT_FEE
     }
   ]
 
-  for (const { label, role, planType, markupBps, expected } of cases) {
+  for (const { label, role, planType, fee, projectDefault, expected } of cases) {
     it(label, () => {
-      expect(
-        resolveMarkupBps(actor(role), { planType, markupBps }, PROJECT_DEFAULT)
-      ).toBe(expected)
+      expect(resolveInstallmentFee(actor(role), { planType, fee }, projectDefault)).toEqual(
+        expected
+      )
     })
   }
 
-  const rejected: Array<[string, number]> = [
-    ['a negative rate', -1],
-    ['a rate above 100%', MAX_MARKUP_BPS + 1],
-    ['a percentage mistaken for basis points', 12.5],
-    ['a fractional basis point', 1_000.5],
-    ['NaN', Number.NaN]
+  const rejected: Array<[string, InstallmentFeeConfig]> = [
+    ['a negative rate', percent(-1)],
+    ['a rate above 100%', percent(MAX_MARKUP_BPS + 1)],
+    ['a percentage mistaken for basis points', percent(12.5)],
+    ['a fractional basis point', percent(1_000.5)],
+    ['NaN basis points', percent(Number.NaN)],
+    ['a negative flat fee', fixed(-1n)],
+    [
+      'a flat fee that is not a bigint',
+      { mode: 'FIXED', bps: 0, fixedMinor: 500 } as unknown as InstallmentFeeConfig
+    ],
+    [
+      'a mode that does not exist',
+      { mode: 'ANNUAL', bps: 0, fixedMinor: 0n } as unknown as InstallmentFeeConfig
+    ]
   ]
 
-  for (const [label, markupBps] of rejected) {
+  for (const [label, fee] of rejected) {
     it(`rejects ${label} from staff as a validation error, not a raw ScheduleError`, () => {
       // Caught here rather than left to generateSchedule so a staff typo comes
       // back as a message on the sale form.
       expect(() =>
-        resolveMarkupBps(actor('ADMIN'), { planType: 'INSTALLMENTS', markupBps }, PROJECT_DEFAULT)
+        resolveInstallmentFee(actor('ADMIN'), { planType: 'INSTALLMENTS', fee }, PERCENT_PROJECT)
       ).toThrow(ServiceError)
     })
   }
 
-  it('does not let a buyer smuggle an out-of-range rate past the check', () => {
+  it('does not let a buyer smuggle an out-of-range charge past the check', () => {
     // The value is discarded before it is validated, so a hostile one cannot
     // even be used to force an error — the sale prices at the project default.
     expect(
-      resolveMarkupBps(actor('BUYER'), { planType: 'INSTALLMENTS', markupBps: -1 }, PROJECT_DEFAULT)
-    ).toBe(PROJECT_DEFAULT)
+      resolveInstallmentFee(
+        actor('BUYER'),
+        { planType: 'INSTALLMENTS', fee: percent(-1) },
+        PERCENT_PROJECT
+      )
+    ).toEqual(PERCENT_PROJECT)
+    expect(
+      resolveInstallmentFee(
+        actor('BUYER'),
+        { planType: 'INSTALLMENTS', fee: fixed(-1n) },
+        FIXED_PROJECT
+      )
+    ).toEqual(FIXED_PROJECT)
   })
 
-  it('rejects a project default that is itself out of range', () => {
+  it('rejects a project default that is itself out of range, in either mode', () => {
     expect(() =>
-      resolveMarkupBps(actor('AGENT'), { planType: 'INSTALLMENTS' }, MAX_MARKUP_BPS + 1)
+      resolveInstallmentFee(
+        actor('AGENT'),
+        { planType: 'INSTALLMENTS' },
+        percent(MAX_MARKUP_BPS + 1)
+      )
     ).toThrow(ServiceError)
+    expect(() =>
+      resolveInstallmentFee(actor('AGENT'), { planType: 'INSTALLMENTS' }, fixed(-1n))
+    ).toThrow(ServiceError)
+  })
+
+  it('leaves "is this fee too big for what is financed" to generateSchedule', () => {
+    // This function has no unit price, so it cannot know. A flat fee that will
+    // later prove larger than the financed amount passes here and is refused
+    // where the figure exists — createSale turns that into a VALIDATION.
+    expect(
+      resolveInstallmentFee(
+        actor('ADMIN'),
+        { planType: 'INSTALLMENTS', fee: fixed(999_999_999_999n) },
+        FIXED_PROJECT
+      )
+    ).toEqual(fixed(999_999_999_999n))
+  })
+})
+
+describe('projectFeeConfig and saleFeeConfig', () => {
+  it('reads a project row into the config the domain wants', () => {
+    expect(
+      projectFeeConfig({
+        installmentFeeMode: 'PERCENT',
+        installmentMarkupBps: 1_000,
+        installmentFixedFeeMinor: 0n
+      })
+    ).toEqual(percent(1_000))
+
+    expect(
+      projectFeeConfig({
+        installmentFeeMode: 'FIXED',
+        installmentMarkupBps: 0,
+        installmentFixedFeeMinor: 250_000_000n
+      })
+    ).toEqual(fixed(250_000_000n))
+  })
+
+  it('reads a sale out of its own snapshot, not its project', () => {
+    // The reason every display site goes through this: re-rating a project, or
+    // switching its mode, must not restate a contract already signed.
+    expect(
+      saleFeeConfig({ feeMode: 'FIXED', markupBps: 0, fixedFeeMinor: 250_000_000n })
+    ).toEqual(fixed(250_000_000n))
+    expect(saleFeeConfig({ feeMode: 'PERCENT', markupBps: 1_000, fixedFeeMinor: 0n })).toEqual(
+      percent(1_000)
+    )
   })
 })
 
 describe('the previewed charge and the previewed entries cannot desync', () => {
-  // The confirm page prints `markupMinor` as its own consent line and the
-  // entries as the schedule below it. They are computed by different
-  // expressions, so a change to one could silently stop describing the other:
-  // this asserts the invariant that ties them together — the entries sum to
-  // exactly the price plus the quoted charge, and nothing else.
-  const combinations: Array<{ priceMinor: bigint; depositMinor: bigint; months: number; markupBps: number }> = []
+  // The confirm page prints `feeMinor` as its own consent line and the entries
+  // as the schedule below it. They are computed by different expressions, so a
+  // change to one could silently stop describing the other: this asserts the
+  // invariant that ties them together — the entries sum to exactly the price
+  // plus the quoted charge, and nothing else — now across both fee modes.
+  const combinations: Array<{
+    priceMinor: bigint
+    depositMinor: bigint
+    months: number
+    fee: InstallmentFeeConfig
+  }> = []
+  const fees = [
+    ...[0, 1, 500, 1_000, 3_333, MAX_MARKUP_BPS].map(percent),
+    ...[0n, 1n, 19_999n, 250_000n].map(fixed)
+  ]
   for (const priceMinor of [100_000n, 145_000_000n, 25_000_000_001n]) {
     for (const depositMinor of [0n, 1n, 20_000n]) {
       for (const months of [1, 12, 36, 37]) {
-        for (const markupBps of [0, 1, 500, 1_000, 3_333, MAX_MARKUP_BPS]) {
-          combinations.push({ priceMinor, depositMinor, months, markupBps })
+        for (const fee of fees) {
+          combinations.push({ priceMinor, depositMinor, months, fee })
         }
       }
     }
   }
 
-  it(`holds across ${combinations.length} price x deposit x term x rate combinations`, () => {
+  it(`holds across ${combinations.length} price x deposit x term x charge combinations`, () => {
     for (const combination of combinations) {
+      const label = JSON.stringify(combination, bigintReplacer)
+      const financedMinor = combination.priceMinor - combination.depositMinor
+
+      // A flat fee at or above what is financed is refused rather than priced —
+      // the smallest case in this grid finances only 80,000, so the largest fee
+      // genuinely does not fit. Asserted here rather than skipped, so the
+      // preview refuses exactly what createSale would refuse.
+      if (combination.fee.mode === 'FIXED' && combination.fee.fixedMinor >= financedMinor) {
+        expect(() =>
+          previewSchedule({
+            planType: 'INSTALLMENTS',
+            signedAt: utc(2026, 8, 9),
+            ...combination
+          })
+        , label).toThrow(ScheduleError)
+        continue
+      }
+
       const preview = previewSchedule({
         planType: 'INSTALLMENTS',
         signedAt: utc(2026, 8, 9),
@@ -673,16 +856,20 @@ describe('the previewed charge and the previewed entries cannot desync', () => {
       // The quoted charge is exactly the residue between the price and what the
       // schedule actually asks for. If someone changed how the entries amortize
       // without changing the quote, this is what fails.
-      expect(preview.markupMinor, JSON.stringify(combination, bigintReplacer)).toBe(
-        summed - combination.priceMinor
-      )
-      expect(preview.totalMinor).toBe(summed)
-      expect(preview.totalMinor).toBe(combination.priceMinor + preview.markupMinor)
+      expect(preview.feeMinor, label).toBe(summed - combination.priceMinor)
+      expect(preview.totalMinor, label).toBe(summed)
+      expect(preview.totalMinor, label).toBe(combination.priceMinor + preview.feeMinor)
 
-      // And the deposit is never marked up: whatever the rate, the signing-day
+      // A flat fee is quoted as exactly itself, never scaled by anything — the
+      // property that makes it not-interest.
+      if (combination.fee.mode === 'FIXED') {
+        expect(preview.feeMinor, label).toBe(combination.fee.fixedMinor)
+      }
+
+      // And the deposit is never charged: whatever the fee, the signing-day
       // entry is the agreed deposit to the minor unit.
       if (combination.depositMinor > 0n) {
-        expect(preview.entries[0].amountDueMinor).toBe(combination.depositMinor)
+        expect(preview.entries[0].amountDueMinor, label).toBe(combination.depositMinor)
       }
     }
   })
@@ -692,11 +879,11 @@ describe('the previewed charge and the previewed entries cannot desync', () => {
       planType: 'FULL',
       priceMinor: 145_000_000n,
       depositMinor: 0n,
-      markupBps: 0,
+      fee: percent(0),
       months: 0,
       signedAt: utc(2026, 8, 9)
     })
-    expect(preview.markupMinor).toBe(0n)
+    expect(preview.feeMinor).toBe(0n)
     expect(preview.totalMinor).toBe(145_000_000n)
   })
 })
@@ -720,6 +907,80 @@ describe('MarkupOverrideSchema', () => {
   it('refuses anything a schedule could not be built from', () => {
     for (const value of ['-1', String(MAX_MARKUP_BPS + 1), '12.5', 'ten']) {
       expect(MarkupOverrideSchema.safeParse(value).success, value).toBe(false)
+    }
+  })
+})
+
+describe('FeeOverrideSchema', () => {
+  // What a URL query string and a set of hidden form fields are parsed through
+  // on their way to createSale. Its whole job is to distinguish "not set" from
+  // "zero", now across two modes.
+  const parse = (input: Record<string, unknown>) => FeeOverrideSchema.parse(input)
+
+  it('reads an entirely absent override as undefined, not as a zero charge', () => {
+    for (const empty of [{}, { feeMode: '', markupBps: '', fixedFeeMinor: '' }]) {
+      expect(parse(empty), JSON.stringify(empty)).toBeUndefined()
+    }
+    expect(parse({ feeMode: null, markupBps: null, fixedFeeMinor: null })).toBeUndefined()
+  })
+
+  it('reads a percentage override', () => {
+    expect(parse({ feeMode: 'PERCENT', markupBps: '1000' })).toEqual(percent(1_000))
+    // Zero is a real instruction here — staff waiving the fee on one sale — and
+    // must survive as 0, not collapse back to "use the default".
+    expect(parse({ feeMode: 'PERCENT', markupBps: '0' })).toEqual(percent(0))
+  })
+
+  it('reads a flat-fee override as exact minor units', () => {
+    expect(parse({ feeMode: 'FIXED', fixedFeeMinor: '250000000' })).toEqual(fixed(250_000_000n))
+    expect(parse({ feeMode: 'FIXED', fixedFeeMinor: '0' })).toEqual(fixed(0n))
+  })
+
+  it('stays exact past the float ceiling', () => {
+    // A NGN fee can exceed Number.MAX_SAFE_INTEGER minor units. The value goes
+    // string -> BigInt with no numeric hop, so nothing is rounded in transit.
+    const huge = '9007199254740993'
+    expect(parse({ feeMode: 'FIXED', fixedFeeMinor: huge })).toEqual(fixed(BigInt(huge)))
+  })
+
+  it('treats a bare markupBps with no mode as a percentage override', () => {
+    // Backwards compatibility: a confirm-page link minted before FIXED existed
+    // must keep quoting exactly what it always quoted.
+    expect(parse({ markupBps: '1000' })).toEqual(percent(1_000))
+  })
+
+  it('falls back to the project default when the chosen mode has no value', () => {
+    // A mode with a blank field is not an override — it is the form as the
+    // agent left it, which means "charge whatever the project charges".
+    expect(parse({ feeMode: 'FIXED', fixedFeeMinor: '' })).toBeUndefined()
+    expect(parse({ feeMode: 'PERCENT', markupBps: '' })).toBeUndefined()
+  })
+
+  it('reads only the field its mode names', () => {
+    // A tampered query carrying both must not be able to smuggle the other
+    // value through; the mode alone decides which one is live.
+    expect(parse({ feeMode: 'FIXED', markupBps: '9999', fixedFeeMinor: '500' })).toEqual(
+      fixed(500n)
+    )
+    expect(parse({ feeMode: 'PERCENT', markupBps: '250', fixedFeeMinor: '999999' })).toEqual(
+      percent(250)
+    )
+  })
+
+  it('refuses anything a schedule could not be built from', () => {
+    const bad = [
+      { feeMode: 'ANNUAL', markupBps: '1000' },
+      { feeMode: 'PERCENT', markupBps: '-1' },
+      { feeMode: 'PERCENT', markupBps: String(MAX_MARKUP_BPS + 1) },
+      { feeMode: 'PERCENT', markupBps: '12.5' },
+      { feeMode: 'PERCENT', markupBps: 'ten' },
+      // Negative and fractional flat fees never even reach BigInt().
+      { feeMode: 'FIXED', fixedFeeMinor: '-1' },
+      { feeMode: 'FIXED', fixedFeeMinor: '250.50' },
+      { feeMode: 'FIXED', fixedFeeMinor: 'lots' }
+    ]
+    for (const value of bad) {
+      expect(FeeOverrideSchema.safeParse(value).success, JSON.stringify(value)).toBe(false)
     }
   })
 })

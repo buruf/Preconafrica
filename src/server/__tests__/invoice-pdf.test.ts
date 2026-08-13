@@ -2,7 +2,6 @@ import { createElement } from 'react'
 import { renderToBuffer } from '@react-pdf/renderer'
 import { describe, expect, it } from 'vitest'
 import { InvoiceDocument, type InvoiceProps } from '@/server/pdf/InvoiceDocument'
-import { UNKNOWN_RECORDER } from '@/server/pdf/invoice-payments'
 import { extractPdfText } from '@/server/__tests__/pdf-fixtures'
 
 /**
@@ -37,23 +36,7 @@ const BASE: InvoiceProps = {
   dueDate: new Date('2026-03-10T00:00:00Z'),
   amountDueMinor: 18333333n,
   amountPaidMinor: 11666667n,
-  status: 'OVERDUE',
-  payments: [
-    {
-      amountMinor: 3333333n,
-      receivedAt: new Date('2026-03-12T00:00:00Z'),
-      method: 'CASH',
-      reference: 'RCPT-0114',
-      recordedBy: 'Tunde Bakare'
-    },
-    {
-      amountMinor: 8333334n,
-      receivedAt: new Date('2026-04-02T00:00:00Z'),
-      method: 'MOBILE_MONEY',
-      reference: 'MPESA-QG7H2',
-      recordedBy: UNKNOWN_RECORDER
-    }
-  ]
+  status: 'OVERDUE'
 }
 
 async function render(props: Partial<InvoiceProps> = {}) {
@@ -67,7 +50,7 @@ async function render(props: Partial<InvoiceProps> = {}) {
 }
 
 describe('invoice PDF', () => {
-  it('renders a real PDF carrying its number, installment label and payments', async () => {
+  it('renders a real PDF carrying its number, installment label and balance', async () => {
     const { buffer, text } = await render()
 
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
@@ -77,20 +60,13 @@ describe('invoice PDF', () => {
     // pins: "2 of 37" on any sale that carries a deposit.
     expect(text).toContain('Installment 2 of 36')
 
-    // Every payment allocated to the entry, by its reference, with the amount
-    // that landed on *this* installment rather than the payment's own total.
-    expect(text).toContain('RCPT-0114')
-    expect(text).toContain('MPESA-QG7H2')
-    expect(text).toContain('KES 33,333.33')
-    expect(text).toContain('2026-03-12')
-    expect(text).toContain('Tunde Bakare')
-    // A deleted staff account prints as the fallback, not as a crash.
-    expect(text).toContain(UNKNOWN_RECORDER)
-
-    // Paid so far and the remainder, both from the entry's own maintained total.
-    expect(text).toContain('Paid so far')
+    // The three figures a bill owes its reader, all derived from the entry's own
+    // amountDueMinor/amountPaidMinor rather than from any allocation row.
+    expect(text).toContain('Amount scheduled')
+    expect(text).toContain('KES 183,333.33')
+    expect(text).toContain('Already paid')
     expect(text).toContain('KES 116,666.67')
-    expect(text).toContain('Still outstanding')
+    expect(text).toContain('Balance due')
     expect(text).toContain('KES 66,666.66')
 
     // Past its due date, and it says so with the date.
@@ -105,12 +81,34 @@ describe('invoice PDF', () => {
     expect(text).toContain('Please quote this number with your payment')
   })
 
+  it('itemises no payments — that trail belongs to the receipt', async () => {
+    // The revert, pinned. An invoice that reproduced the receipt's audit trail
+    // (dates, methods, references, who recorded it) was a demand for payment
+    // dressed as a proof of one. It points at the receipt instead.
+    const { text } = await render()
+
+    expect(text).not.toContain('PAYMENTS RECEIVED')
+    expect(text).not.toContain('Recorded by')
+    expect(text).not.toContain('Reference')
+    expect(text).not.toContain('Method')
+    expect(text).toContain('A receipt is issued for every payment received')
+  })
+
+  it('bills an installment nothing has been paid against', async () => {
+    // The ordinary case for a bill, and the one that could not be issued at all
+    // an hour ago: the whole scheduled amount is the balance due.
+    const { text } = await render({ amountPaidMinor: 0n, status: 'PENDING' })
+
+    expect(text).toContain('NOT YET PAID')
+    expect(text).toContain('Nothing has been received against this installment yet')
+    expect(text).toContain('Balance due')
+    // Already paid reads zero, and the balance is the full scheduled amount.
+    expect(text).toContain('KES 0.00')
+    expect(text).toContain('KES 183,333.33')
+  })
+
   it('reads as settled when the installment is fully paid', async () => {
-    const { text } = await render({
-      amountPaidMinor: 18333333n,
-      status: 'PAID',
-      payments: [{ ...BASE.payments[0], amountMinor: 18333333n }]
-    })
+    const { text } = await render({ amountPaidMinor: 18333333n, status: 'PAID' })
 
     expect(text).toContain('PAID IN FULL')
     expect(text).toContain('No further payment is due')
@@ -122,13 +120,6 @@ describe('invoice PDF', () => {
 
     expect(text).toContain('Deposit')
     expect(text).not.toContain('Installment 0')
-  })
-
-  it('says plainly when nothing is allocated, rather than printing an empty table', async () => {
-    // Reachable on an invoice whose payment was voided after issuance.
-    const { text } = await render({ amountPaidMinor: 0n, status: 'OVERDUE', payments: [] })
-
-    expect(text).toContain('No payments are recorded against this installment')
   })
 
   it('embeds no fonts, so a buyer on a weak connection downloads kilobytes', async () => {

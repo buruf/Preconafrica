@@ -31,8 +31,8 @@ const STATEMENT: StatementProps = {
   termMonths: 24,
   priceMinor: 14500000000n,
   depositMinor: 500000000n,
-  markupBps: 1000,
-  markupMinor: 1400000000n,
+  fee: { mode: 'PERCENT', bps: 1000, fixedMinor: 0n },
+  feeMinor: 1400000000n,
   signedAt: new Date('2026-02-01T00:00:00Z'),
   expectedCompletion: new Date('2028-06-30T00:00:00Z'),
   entries: [
@@ -74,16 +74,7 @@ const INVOICE: InvoiceProps = {
   dueDate: new Date('2026-03-01T00:00:00Z'),
   amountDueMinor: 641666666n,
   amountPaidMinor: 100000000n,
-  status: 'PARTIAL',
-  payments: [
-    {
-      amountMinor: 100000000n,
-      receivedAt: new Date('2026-03-02T00:00:00Z'),
-      method: 'BANK_TRANSFER',
-      reference: 'TRF-88121',
-      recordedBy: 'Tunde Bakare'
-    }
-  ]
+  status: 'PARTIAL'
 }
 
 async function render(element: ReturnType<typeof createElement>): Promise<Buffer> {

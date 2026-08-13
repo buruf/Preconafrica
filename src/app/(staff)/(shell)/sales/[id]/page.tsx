@@ -1,10 +1,15 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
-import { getSaleForStaff, summariseSale } from '@/server/services/sales'
+import { getSaleForStaff, saleFeeConfig, summariseSale } from '@/server/services/sales'
 import { ServiceError } from '@/server/services/errors'
 import { deriveStatus } from '@/domain/status'
-import { bpsToPercentString, computeMarkupMinor, scheduleEntryLabel } from '@/domain/schedule'
+import {
+  computeInstallmentFeeMinor,
+  installmentFeeRateSuffix,
+  isFreeInstallmentFee,
+  scheduleEntryLabel
+} from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { UnitImagery } from '@/components/media'
@@ -45,15 +50,15 @@ export default async function StaffSalePage({ params }: { params: { id: string }
   const summary = summariseSale(sale, asOf)
   const money = (amount: bigint) => formatMinor(amount, sale.currency)
 
-  // Recomputed from the sale's own snapshot — priceMinor, depositMinor and
-  // markupBps were all frozen at signing — rather than inferred by subtracting
-  // the price from the schedule total, so the line stays right even if a row
-  // were ever hand-repaired. Without it, a marked-up sale simply reads as owing
-  // more than the unit cost, with nothing on the page explaining why.
-  const markupMinor =
-    sale.markupBps > 0
-      ? computeMarkupMinor(sale.priceMinor - sale.depositMinor, sale.markupBps)
-      : 0n
+  // Recomputed from the sale's own snapshot — price, deposit and the whole fee
+  // config were all frozen at signing — rather than inferred by subtracting the
+  // price from the schedule total, so the line stays right even if a row were
+  // ever hand-repaired. Without it, a charged sale simply reads as owing more
+  // than the unit cost, with nothing on the page explaining why.
+  const saleFee = saleFeeConfig(sale)
+  const feeMinor = isFreeInstallmentFee(saleFee)
+    ? 0n
+    : computeInstallmentFeeMinor(sale.priceMinor - sale.depositMinor, saleFee)
 
   // getSaleForStaff includes `documents` as the sale's flat list, not a
   // per-entry relation — build the lookup once rather than scanning the list
@@ -85,10 +90,13 @@ export default async function StaffSalePage({ params }: { params: { id: string }
         <Card>
           <p className="text-xs text-slate-500">Total owed</p>
           <p className="text-lg font-semibold">{money(summary.totalOwedMinor)}</p>
-          {markupMinor > 0n ? (
+          {feeMinor > 0n ? (
+            // The rate suffix is empty for a flat fee, by design — a FIXED
+            // charge has no percentage, and inventing one for display would be
+            // the interest framing this mode exists to avoid.
             <p className="mt-1 text-xs text-slate-500">
-              includes {money(markupMinor)} installment charge (
-              {bpsToPercentString(sale.markupBps)}%)
+              includes {money(feeMinor)} installment charge
+              {installmentFeeRateSuffix(saleFee)}
             </p>
           ) : null}
         </Card>
@@ -156,9 +164,6 @@ export default async function StaffSalePage({ params }: { params: { id: string }
                   saleId={sale.id}
                   scheduleEntryId={entry.id}
                   documentId={invoiceByEntryId.get(entry.id) ?? null}
-                  // Compared here, on the server: the client component gets a
-                  // boolean, never the bigint.
-                  hasPayment={entry.amountPaidMinor > 0n}
                 />
               </div>
             </li>
