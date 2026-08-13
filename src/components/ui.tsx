@@ -158,6 +158,59 @@ export function Card({
 
 /* ------------------------------------------------------------------- forms */
 
+/**
+ * The shell every text input, select and textarea wears.
+ *
+ * Exported because three screens legitimately need a bare control rather than
+ * `Field`'s — a `<select>`, a `<textarea>`, an input that has to be `disabled`
+ * by a client component — and each of them had grown its own
+ * `min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base` string.
+ * Five copies of a control shell is five ways for one border colour to be
+ * wrong, which is exactly what this file exists to prevent.
+ *
+ * `text-base`, not `text-sm`: anything under 16px makes iOS Safari zoom the
+ * whole page on focus. The focus ring is teal — the accent from DESIGN.md —
+ * rather than the browser default.
+ */
+export const CONTROL_CLASS =
+  'min-h-11 w-full rounded-btn border border-line bg-surface px-3 text-base text-ink outline-none placeholder:text-muted focus:border-teal-500 focus:ring-2 focus:ring-teal-100'
+
+/**
+ * A `<select>` on the shared control shell, for the six places that need one.
+ *
+ * A plain element rather than anything clever: a native select is the right
+ * control on a phone (it opens the platform picker), it works with no
+ * JavaScript, and it is the reason the arrears project filter can be a
+ * server-rendered GET form rather than a client component.
+ */
+export function Select({
+  name,
+  children,
+  defaultValue,
+  required,
+  disabled,
+  className = ''
+}: {
+  name: string
+  children: ReactNode
+  defaultValue?: string
+  required?: boolean
+  disabled?: boolean
+  className?: string
+}) {
+  return (
+    <select
+      name={name}
+      defaultValue={defaultValue}
+      required={required}
+      disabled={disabled}
+      className={`${CONTROL_CLASS} ${className}`}
+    >
+      {children}
+    </select>
+  )
+}
+
 export function Field({
   label,
   name,
@@ -190,10 +243,7 @@ export function Field({
           required={required}
           defaultValue={defaultValue}
           placeholder={placeholder}
-          // text-base, not text-sm: anything under 16px makes iOS Safari zoom
-          // the whole page on focus. The focus ring is teal — the accent colour
-          // from DESIGN.md — rather than the browser default.
-          className="min-h-11 w-full rounded-btn border border-line bg-surface px-3 text-base text-ink outline-none placeholder:text-muted focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+          className={CONTROL_CLASS}
         />
       )}
       {hint ? <span className="mt-1 block text-xs text-muted">{hint}</span> : null}
@@ -244,18 +294,34 @@ export function ButtonLink({
   href,
   children,
   variant = 'primary',
+  external = false,
   className = ''
 }: {
   href: string
   children: ReactNode
   variant?: ButtonVariant
+  /**
+   * Renders a plain `<a>` instead of a `Link`, for a target the App Router must
+   * keep its hands off: the arrears CSV is a route handler that answers with
+   * `Content-Disposition: attachment`, and a client-side navigation to it would
+   * have the router try to parse a spreadsheet as a React payload. Prefetching
+   * it would also mean generating the export on hover.
+   */
+  external?: boolean
   className?: string
 }) {
+  const classes = `inline-flex items-center justify-center ${BUTTON_BASE} ${BUTTON_VARIANT[variant]} ${className}`
+
+  if (external) {
+    return (
+      <a href={href} className={classes}>
+        {children}
+      </a>
+    )
+  }
+
   return (
-    <Link
-      href={href}
-      className={`inline-flex items-center justify-center ${BUTTON_BASE} ${BUTTON_VARIANT[variant]} ${className}`}
-    >
+    <Link href={href} className={classes}>
       {children}
     </Link>
   )
