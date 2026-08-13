@@ -338,8 +338,15 @@ describe('an unpaid deposit is arrears', () => {
   const arrearsSale = {
     id: 'sale_1',
     currency: 'NGN',
-    buyer: { fullName: 'Amina Yusuf', phone: '+2348031234567', email: 'amina@example.com' },
-    project: { name: 'Lekki Gardens' },
+    buyer: {
+      // The arrears row carries the buyer's id too — the report counts distinct
+      // buyers, and one buyer can hold more than one contract.
+      id: 'buyer-amina',
+      fullName: 'Amina Yusuf',
+      phone: '+2348031234567',
+      email: 'amina@example.com'
+    },
+    project: { id: 'project-lekki', name: 'Lekki Gardens' },
     unit: { name: 'A-0101' },
     scheduleEntries: entries
   }
