@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32">
+  <!-- The same geometry as src/components/Logo.tsx, on a page-coloured tile so
+       the mark does not vanish against a dark browser-tab strip. Next serves
+       this file as the favicon automatically; it cannot import the component,
+       so the two are kept in step by hand. -->
+  <rect width="24" height="24" rx="4" fill="#F6F8FA"/>
+  <path fill="#21A0A0" fill-rule="evenodd" d="M2.5 4.5a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1V21h-8V4.5Z M4.5 6.5h2v2h-2v-2Z M7.5 6.5h2v2h-2v-2Z M4.5 10.5h2v2h-2v-2Z M7.5 10.5h2v2h-2v-2Z M4.5 14.5h2v2h-2v-2Z M7.5 14.5h2v2h-2v-2Z"/>
+  <path fill="#0E2A47" fill-rule="evenodd" d="M12.5 10a1 1 0 0 1 1-1h7a1 1 0 0 1 1 1v11h-9V10Z M14.5 12h2v2h-2v-2Z M17.5 12h2v2h-2v-2Z M14.5 16h2v2h-2v-2Z M17.5 16h2v2h-2v-2Z"/>
+</svg>

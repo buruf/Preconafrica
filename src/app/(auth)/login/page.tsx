@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { Logo } from '@/components/Logo'
 import { LoginForm } from './LoginForm'
 
 /**
@@ -9,6 +10,11 @@ import { LoginForm } from './LoginForm'
  * The notices are the other half of the two flows that end here: a password
  * change signs the user out on purpose, and landing on a bare sign-in screen
  * with no explanation reads like a failure rather than the success it is.
+ *
+ * This is the only page anyone sees before they have an account context, and
+ * for most buyers it is the first impression of the product, so it carries the
+ * mark at 40px and the tagline. It carries nothing else: there is no marketing
+ * site here, and the login screen is not the place to invent one.
  */
 const NOTICES: Record<string, string> = {
   reset: 'Password updated — sign in with your new password.',
@@ -32,18 +38,22 @@ export default function LoginPage({
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center p-5">
-      <h1 className="mb-1 text-2xl font-semibold">Sign in</h1>
-      <p className="mb-5 text-sm text-slate-500">Developers, agents and buyers.</p>
+      <div className="mb-6">
+        <Logo size={40} withWordmark />
+        <p className="mt-3 text-[15px] text-muted">Buy early. Build the future.</p>
+      </div>
 
       {notice ? (
-        <p className="mb-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{notice}</p>
+        <p className="mb-4 rounded-btn border border-status-paid-border bg-status-paid-bg px-3 py-2 text-sm text-status-paid-text">
+          {notice}
+        </p>
       ) : null}
 
       <LoginForm />
 
       <Link
         href="/forgot-password"
-        className="mt-4 flex min-h-11 items-center justify-center text-sm font-medium text-slate-600 underline"
+        className="mt-2 flex min-h-11 items-center justify-center text-sm font-medium text-muted underline"
       >
         Forgot password?
       </Link>

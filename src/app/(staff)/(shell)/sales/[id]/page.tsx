@@ -11,9 +11,8 @@ import {
   scheduleEntryLabel
 } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
-import { Card, PageHeader } from '@/components/ui'
+import { Card, PageHeader, StatusPill } from '@/components/ui'
 import { UnitImagery } from '@/components/media'
-import { StatusBadge } from '@/components/StatusBadge'
 import { PaymentForm } from './PaymentForm'
 import { VoidControl } from './VoidControl'
 import { InvoiceControl } from './InvoiceControl'
@@ -159,7 +158,7 @@ export default async function StaffSalePage({ params }: { params: { id: string }
                 </p>
               </div>
               <div className="flex items-center gap-3">
-                <StatusBadge status={deriveStatus(entry, asOf)} />
+                <StatusPill status={deriveStatus(entry, asOf)} />
                 <InvoiceControl
                   saleId={sale.id}
                   scheduleEntryId={entry.id}

@@ -9,9 +9,8 @@ import {
   scheduleEntryLabel
 } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
-import { Card, PageHeader } from '@/components/ui'
+import { Card, PageHeader, StatusPill } from '@/components/ui'
 import { MediaImage, UnitImagery } from '@/components/media'
-import { StatusBadge } from '@/components/StatusBadge'
 import { InvoiceControl } from './InvoiceControl'
 
 const date = (d: Date) => d.toISOString().slice(0, 10)
@@ -146,7 +145,7 @@ export default async function BuyerDashboard() {
                 </p>
               </div>
               <div className="flex items-center gap-3">
-                <StatusBadge status={deriveStatus(entry, asOf)} />
+                <StatusPill status={deriveStatus(entry, asOf)} />
                 <InvoiceControl
                   scheduleEntryId={entry.id}
                   documentId={invoiceByEntryId.get(entry.id) ?? null}
