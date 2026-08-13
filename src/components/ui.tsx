@@ -369,11 +369,18 @@ export function UnitTile({
       className={`flex min-h-[4.5rem] flex-col items-center justify-center gap-0.5 rounded-btn border px-1 text-center transition-opacity active:opacity-80 ${STATUS_TONE[status]} ${className}`}
     >
       <span className="text-[15px] font-semibold leading-none">{name}</span>
-      {/* `muted` per DESIGN.md, deliberately not the status text colour: the
-          bed count is the same secondary fact on every tile, and drawing it in
+      {/* One colour for the bed count on every tile, deliberately not the status
+          text colour: it is the same secondary fact everywhere, and drawing it in
           three different colours would make it look like it meant three
-          different things. */}
-      <span className="text-[12px] leading-none text-muted">{bedrooms} bed</span>
+          different things.
+          `ink`, not the `muted` DESIGN.md gives captions on `surface`. Muted
+          (#64748B) on the Available fill (#DCFCE7) is ~4.35:1 and on the Sold
+          fill (#FFE4E6) ~4.4:1 — both under the 4.5:1 floor for 12px text, which
+          is a real failure at the size and on the screen this is read on. `ink`
+          clears it with room to spare (~16:1 and ~15:1) and the size and weight
+          still carry "secondary". Captions on a tinted fill are the documented
+          exception to the muted rule — see DESIGN.md "Type". */}
+      <span className="text-[12px] leading-none text-ink">{bedrooms} bed</span>
     </Link>
   )
 }

@@ -57,9 +57,22 @@ easiest thing to cut.
 | Label, caption | 13px / 500, `muted` |
 | Money, prominent | 22px / 700, tabular numerals |
 | Money, inline | inherit / 600, tabular numerals |
+| Hero figure | 32px / 700, tabular numerals |
+
+The **hero figure** is the one number a screen exists to show — the buyer's
+outstanding balance on the filled navy card, and nothing else so far. It is the
+top of the ladder on purpose: a second 32px figure on the same screen means
+neither is the hero. `StatCard size="hero"` is the only way to draw it, so a
+later screen cannot invent 28px or 36px.
 
 Every figure that can sit above another figure uses `font-variant-numeric:
 tabular-nums`, so columns of money line up.
+
+**Captions on a tinted status fill are `ink`, not `muted`.** `muted` (#64748B) is
+chosen for its contrast on `surface` and on `page`; on the pale status fills it
+falls to ≈4.35:1 (Available #DCFCE7) and ≈4.4:1 (Sold #FFE4E6), under the 4.5:1
+floor. The unit tile's bed count is the one caption this applies to today. Size
+and weight carry "secondary" there; the colour does not have to.
 
 ## Shape and spacing
 
@@ -70,7 +83,8 @@ tabular-nums`, so columns of money line up.
 
 ## Navigation
 
-A fixed bottom tab bar on mobile, four tabs, icon over 11px label:
+A fixed bottom tab bar on mobile, icon over 11px label. Four tabs for staff,
+three for a buyer — Projects is staff-only, and the rest are shown to everyone:
 
 | Tab | Route | Shown to |
 |---|---|---|
@@ -92,10 +106,12 @@ appears once login is behind you, and a screen with a bottom bar and no header
 reads as a web page rather than as an app. From `sm:` it is the left half of the
 top bar and the destinations are the right half.
 
-**Team is not a fifth tab.** The bar is four destinations for every role. Team
-is occasional org administration — add an agent, set the letterhead logo — not a
-daily destination, and a bar that is a different shape for an admin than for an
-agent on the same screens is a worse trade than one extra tap. It is a link on
+**Team is not a fifth tab.** The bar tops out at the four destinations above,
+and what a role sees is decided by the role, never by the user: every admin and
+every agent sees the same four, every buyer the same three. Team is occasional
+org administration — add an agent, set the letterhead logo — not a daily
+destination, and a bar that is a different shape for an admin than for an agent
+on the same screens is a worse trade than one extra tap. It is a link on
 Profile, which is already "you and your organisation"; being a link on a page
 rather than a tab also makes it identically reachable from both presentations,
 which is the invariant the single destination list exists to hold.

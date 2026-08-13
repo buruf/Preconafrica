@@ -37,8 +37,9 @@ const HOME: Destination = { href: '/', label: 'Home', icon: 'home' }
 /**
  * Profile owns the change-password pages (both roles' copies) and `/team`.
  *
- * Team is deliberately *not* a fifth tab. DESIGN.md fixes the bar at four
- * destinations; adding a fifth for one role would make the admin's bar a
+ * Team is deliberately *not* a fifth tab. DESIGN.md caps the bar at four
+ * destinations for staff and three for a buyer (Projects is staff-only);
+ * adding a fifth for one role would make the admin's bar a
  * different shape from the agent's on the same screens, and Team is an
  * occasional org-administration surface (add an agent, set the letterhead
  * logo), not somewhere anyone navigates several times a day. Profile is

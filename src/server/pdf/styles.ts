@@ -148,12 +148,6 @@ export const styles = StyleSheet.create({
   colAmount: { width: '25%', textAlign: 'right' },
   colPaid: { width: '20%', textAlign: 'right' },
   colStatus: { width: '20%', textAlign: 'right' },
-  total: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: 10,
-    fontFamily: BOLD
-  },
   void: { color: STATUS_OVERDUE, fontFamily: BOLD, marginTop: 8 },
   footer: {
     position: 'absolute',
