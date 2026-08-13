@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CSV_BOM, csvField, toCsv } from '@/server/csv'
+import { CSV_BOM, csvField, csvSafeText, toCsv } from '@/server/csv'
 import {
   ARREARS_CSV_HEADERS,
   arrearsCsvFilename,
@@ -53,6 +53,47 @@ describe('csvField', () => {
   })
 })
 
+describe('csvSafeText', () => {
+  it('defuses every character Excel reads as the start of a formula', () => {
+    // One case per lead. `=` and `@` are the injection classics; `+` and `-` are
+    // the ones that also silently corrupt ordinary data.
+    expect(csvSafeText('=HYPERLINK("http://evil","click")')).toBe(
+      '\'=HYPERLINK("http://evil","click")'
+    )
+    expect(csvSafeText("=cmd|' /C calc'!A0")).toBe("'=cmd|' /C calc'!A0")
+    expect(csvSafeText('@SUM(A1:A9)')).toBe("'@SUM(A1:A9)")
+    expect(csvSafeText('-2+3')).toBe("'-2+3")
+    // Tab and CR are stripped by Excel's importer before it looks at the next
+    // character, so a formula hidden behind one is still a formula.
+    expect(csvSafeText('\t=1+1')).toBe("'\t=1+1")
+    expect(csvSafeText('\r=1+1')).toBe("'\r=1+1")
+  })
+
+  it('keeps the + on a phone number instead of letting Excel evaluate it', () => {
+    // The non-security half, and the one that fires on every row: unguarded,
+    // Excel evaluates +254733222111 to the number 254733222111 and the + is gone.
+    expect(csvSafeText('+254733222111')).toBe("'+254733222111")
+    expect(csvSafeText('+2348031234567')).toBe("'+2348031234567")
+  })
+
+  it('leaves an ordinary text field completely alone', () => {
+    // No apostrophe on anything that did not need one — the wart is paid for
+    // only where it buys something.
+    expect(csvSafeText('Zainab Bello')).toBe('Zainab Bello')
+    expect(csvSafeText('Smith, John "JJ"')).toBe('Smith, John "JJ"')
+    expect(csvSafeText('NGN')).toBe('NGN')
+    expect(csvSafeText('')).toBe('')
+    // A lead character anywhere but the front is harmless and untouched.
+    expect(csvSafeText('Block A-3')).toBe('Block A-3')
+    expect(csvSafeText('zainab+arrears@buyer.test')).toBe('zainab+arrears@buyer.test')
+  })
+
+  it('does not quote — that is still csvField\'s job, and it composes', () => {
+    // Defuse then quote, in that order, which is what arrearsCsvTable + toCsv do.
+    expect(csvField(csvSafeText('=A1,B1'))).toBe('"\'=A1,B1"')
+  })
+})
+
 describe('toCsv', () => {
   it('joins cells with commas and rows with CRLF, and ends with one', () => {
     expect(toCsv([['a', 'b'], ['c', 'd']])).toBe('a,b\r\nc,d\r\n')
@@ -65,7 +106,16 @@ describe('toCsv', () => {
   it('offers a BOM for Excel without putting one in the body', () => {
     // Three bytes, and without them Excel on Windows reads the file as the
     // system codepage and mangles every non-ASCII name.
-    expect(CSV_BOM).toBe('﻿')
+    //
+    // Asserted by codepoint and by byte length, never by pasting the character:
+    // a raw U+FEFF is invisible, so a re-encoding pass that mojibakes the source
+    // to `\u00EF\u00BB\u00BF` mojibakes an identical literal here too and this test stays green
+    // while the export ships garbage. `\uFEFF` cannot be corrupted silently, and
+    // three bytes is the thing Excel actually reads.
+    expect(CSV_BOM).toBe('\uFEFF')
+    expect(CSV_BOM).toHaveLength(1)
+    expect(CSV_BOM.codePointAt(0)).toBe(0xfeff)
+    expect(Buffer.byteLength(CSV_BOM, 'utf8')).toBe(3)
     expect(toCsv([['a']]).startsWith(CSV_BOM)).toBe(false)
   })
 })
@@ -93,8 +143,43 @@ describe('the arrears CSV table', () => {
     expect(cells[5]).toBe('NGN')
     expect(cells[6]).toBe('936111.11')
     // The failure this pins: `formatMinor` output in the amount column, which
-    // sums to zero in every spreadsheet on earth.
+    // sums to zero in every spreadsheet on earth. It now also pins the other
+    // direction — a formula-defusing apostrophe reaching a numeric column would
+    // break the sum just as thoroughly.
     expect(cells[6]).not.toMatch(/[^\d.]/)
+  })
+
+  it('defuses the text columns and leaves every numeric column bare', () => {
+    // The split that makes the export both safe and summable. The Phone column
+    // begins with `+` on every row, so the defusing is not a rare path.
+    const [cells] = arrearsCsvTable([
+      row({
+        buyerName: "=cmd|' /C calc'!A0",
+        buyerPhone: '+2348031234567',
+        buyerEmail: '@evil.test',
+        projectName: '-Sunrise',
+        unitName: '=303',
+        currency: 'NGN'
+      })
+    ])
+
+    expect(cells[0]).toBe("'=cmd|' /C calc'!A0")
+    expect(cells[1]).toBe("'+2348031234567")
+    expect(cells[2]).toBe("'@evil.test")
+    expect(cells[3]).toBe("'-Sunrise")
+    expect(cells[4]).toBe("'=303")
+    // Untouched: it never needed defusing and must not be given an apostrophe.
+    expect(cells[5]).toBe('NGN')
+
+    // The four numeric columns, bare. A spreadsheet has to be able to sum the
+    // amount, sort by days late and read the date as a date.
+    expect(cells[6]).toBe('936111.11')
+    expect(cells[7]).toBe('1')
+    expect(cells[8]).toBe('2026-05-01')
+    expect(cells[9]).toBe('103')
+    for (const index of [6, 7, 8, 9]) {
+      expect(cells[index].startsWith("'"), `column ${index} must not be defused`).toBe(false)
+    }
   })
 
   it('respects the currency exponent, so a zero-decimal amount has no decimals', () => {
@@ -132,7 +217,25 @@ describe('the arrears CSV table', () => {
     ])
     const [, dataLine] = body.split('\r\n')
 
-    expect(dataLine.startsWith('"Smith, John ""JJ""",+2348031234567,')).toBe(true)
+    // The name is quoted and its quote doubled, exactly as before. The phone now
+    // carries a leading apostrophe — Excel reads it as text and shows
+    // `+2348031234567`; without it Excel evaluates the `+` and shows
+    // `2348031234567`, dropping the country-code marker on every row.
+    expect(dataLine.startsWith('"Smith, John ""JJ""",\'+2348031234567,')).toBe(true)
+    expect(dataLine).toContain(',NGN,936111.11,1,2026-05-01,103')
+  })
+
+  it('keeps a formula-leading name inside its own quoted field', () => {
+    // Both defences at once: the apostrophe stops the formula, the quoting stops
+    // the commas inside it from shifting the columns to its right.
+    const body = toCsv([
+      [...ARREARS_CSV_HEADERS],
+      ...arrearsCsvTable([row({ buyerName: '=HYPERLINK("http://evil","click")' })])
+    ])
+    const [, dataLine] = body.split('\r\n')
+
+    expect(dataLine.startsWith('"\'=HYPERLINK(""http://evil"",""click"")",')).toBe(true)
+    // Unmoved, and still summable.
     expect(dataLine).toContain(',NGN,936111.11,1,2026-05-01,103')
   })
 })

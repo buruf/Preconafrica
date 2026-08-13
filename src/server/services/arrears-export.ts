@@ -1,4 +1,5 @@
 import { toMajorString } from '@/domain/currency'
+import { csvSafeText } from '@/server/csv'
 import type { ArrearsRow } from '@/server/services/arrears'
 
 /**
@@ -20,6 +21,15 @@ import type { ArrearsRow } from '@/server/services/arrears'
  *  2. **Dates are ISO.** `2026-03-10` sorts as text, parses everywhere, and does
  *     not become the tenth of March or the third of October depending on the
  *     reader's locale.
+ *
+ * A third rule follows from the first two rather than competing with them:
+ * **every free-text cell goes through `csvSafeText` and no numeric cell does.**
+ * The text cells carry whatever a buyer typed, which may open with `=` — and the
+ * Phone column opens with `+` on every row, which Excel evaluates. The numeric
+ * cells are generated here from bigints and dates, cannot begin with a formula
+ * lead that means anything, and must stay bare so the column still sums. Keeping
+ * the split at this line is what guarantees that: `csvSafeText` is applied
+ * per-column, by name, not to the row.
  */
 export const ARREARS_CSV_HEADERS = [
   'Buyer',
@@ -43,12 +53,14 @@ const isoDate = (value: Date) => value.toISOString().slice(0, 10)
  */
 export function arrearsCsvTable(rows: readonly ArrearsRow[]): string[][] {
   return rows.map((row) => [
-    row.buyerName,
-    row.buyerPhone,
-    row.buyerEmail,
-    row.projectName,
-    row.unitName,
-    row.currency,
+    // Text, so defused. See rule 3 above.
+    csvSafeText(row.buyerName),
+    csvSafeText(row.buyerPhone),
+    csvSafeText(row.buyerEmail),
+    csvSafeText(row.projectName),
+    csvSafeText(row.unitName),
+    csvSafeText(row.currency),
+    // Numbers and a date, so bare — no `csvSafeText` below this line, ever.
     // The number on its own. See rule 1 above.
     toMajorString(row.overdueAmountMinor, row.currency),
     String(row.overdueCount),
