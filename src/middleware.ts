@@ -30,6 +30,12 @@ export const config = {
     // Listed for the same reason /team was: an incomplete matcher reads like
     // an intentional exemption to whoever finds it next, and this grants no
     // access either way.
-    '/account/:path*'
+    '/account/:path*',
+    // The role-aware home screen and the profile page, both behind
+    // `requireUser`. Added for the same completeness reason as /team and
+    // /account: this grants no access either way, and a matcher that omits a
+    // signed-in path reads like an intentional exemption.
+    '/',
+    '/profile/:path*'
   ]
 }

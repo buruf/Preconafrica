@@ -117,6 +117,28 @@ export async function getOrganization(actor: SessionActor): Promise<Organization
   return org
 }
 
+/**
+ * The organisation's display name, for anyone who belongs to it.
+ *
+ * `getOrganization` above is ADMIN-only because it carries the letterhead logo,
+ * which is an editable setting. The *name* is not a setting — it heads the staff
+ * home screen and appears on every buyer's profile, so an agent and a buyer both
+ * have to be able to read it, and neither may call the admin function to do so.
+ *
+ * There is no assertRole because there is nothing to authorise: the lookup is
+ * keyed by `actor.orgId` from the session, so the only organisation any caller
+ * can name is the one they are already inside. No parameter here could point at
+ * another tenant.
+ */
+export async function getOrganizationName(actor: SessionActor): Promise<string> {
+  const org = await prisma.organization.findUnique({
+    where: { id: actor.orgId },
+    select: { name: true }
+  })
+  if (!org) throw new ServiceError('Organisation not found', 'NOT_FOUND')
+  return org.name
+}
+
 export const UpdateOrganizationSchema = z.object({ logoUrl: ImageUrlField })
 
 export type UpdateOrganizationInput = z.infer<typeof UpdateOrganizationSchema>

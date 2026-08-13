@@ -153,6 +153,8 @@ export function InvoiceDocument(props: InvoiceProps) {
           <View style={styles.amountPanelRight}>
             <Text style={styles.blockTitle}>AMOUNT DUE</Text>
             <Text style={styles.amountFigure}>{money(outstanding)}</Text>
+            {/* Not `figure`: this is a caption about the amount, not a figure in
+                a column, and `figure` carries the bold weight money gets. */}
             <Text style={styles.muted}>of {money(props.amountDueMinor)} scheduled</Text>
           </View>
         </View>
@@ -165,15 +167,15 @@ export function InvoiceDocument(props: InvoiceProps) {
             belongs to the receipt. */}
         <View style={styles.summaryRow}>
           <Text style={styles.muted}>Amount scheduled</Text>
-          <Text>{money(props.amountDueMinor)}</Text>
+          <Text style={styles.figure}>{money(props.amountDueMinor)}</Text>
         </View>
         <View style={styles.summaryRow}>
           <Text style={styles.muted}>Already paid</Text>
-          <Text>{money(props.amountPaidMinor)}</Text>
+          <Text style={styles.figure}>{money(props.amountPaidMinor)}</Text>
         </View>
         <View style={styles.summaryTotal}>
           <Text>Balance due</Text>
-          <Text>{money(outstanding)}</Text>
+          <Text style={styles.figure}>{money(outstanding)}</Text>
         </View>
         <Text style={[styles.muted, styles.emptyNote]}>
           A receipt is issued for every payment received and lists its date, method and reference.

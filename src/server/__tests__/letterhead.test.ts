@@ -69,8 +69,14 @@ describe('the letterhead every document shares', () => {
       expect(text).toContain('Expected completion')
     }
     if (doc.docType === 'RECEIPT') {
-      expect(text).toContain('Received from')
+      // 'RECEIVED FROM', matching the invoice's 'BILLED TO': the receipt now
+      // wears the same block captions and the same amount panel as the invoice,
+      // which is what stopped a buyer's two documents looking like they came out
+      // of two different systems. Still the receipt's own words, not a copy of
+      // the invoice's — that is the distinction this whole test exists for.
+      expect(text).toContain('RECEIVED FROM')
       expect(text).toContain('Amount received')
+      expect(text).toContain('Balance remaining')
     }
   })
 

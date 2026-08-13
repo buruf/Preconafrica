@@ -18,6 +18,11 @@ export function ResetPasswordForm({ token }: { token: string }) {
 
   return (
     <Card>
+      {/* Heading inside the card, matching login and /forgot-password. */}
+      <h1 className="mb-1 text-xl font-semibold text-navy-900">Choose a new password</h1>
+      <p className="mb-4 text-[13px] text-muted">
+        Then sign in with it — you will not need this link again.
+      </p>
       <form action={formAction} className="space-y-4">
         <ErrorText>{error}</ErrorText>
         {/* The token travels in a hidden field rather than being re-read from

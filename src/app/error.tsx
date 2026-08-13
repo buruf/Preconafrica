@@ -13,14 +13,14 @@
 export default function RootError() {
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col items-center justify-center p-5 text-center">
-      <div className="w-full rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h1 className="text-lg font-semibold">Something went wrong</h1>
-        <p className="mt-2 text-sm text-slate-500">
+      <div className="w-full rounded-card border border-line bg-surface p-6 shadow-card">
+        <h1 className="text-xl font-semibold text-navy-900">Something went wrong</h1>
+        <p className="mt-2 text-[15px] text-muted">
           Please try again. If it keeps happening, contact us.
         </p>
         <a
           href="/"
-          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-lg bg-slate-900 px-4 text-sm font-medium text-white"
+          className="mt-4 inline-flex min-h-11 items-center justify-center rounded-btn bg-navy-900 px-4 text-sm font-semibold text-surface hover:bg-navy-800"
         >
           Go to the home page
         </a>

@@ -84,5 +84,10 @@ export async function updateUnitAction(_prev: string | undefined, formData: Form
     return error instanceof ServiceError ? error.message : 'Could not update the unit.'
   }
 
+  // Both screens that render this unit. The inventory grid shows its name and
+  // status; the unit's own page — where this form now lives — shows everything
+  // else, and without the second call the page you just submitted from would
+  // redraw from cache with the values you replaced.
   revalidatePath(`/projects/${projectId}`)
+  revalidatePath(`/projects/${projectId}/units/${unitId}`)
 }

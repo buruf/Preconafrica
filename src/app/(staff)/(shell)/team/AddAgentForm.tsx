@@ -18,7 +18,7 @@ export function AddAgentForm() {
 
   return (
     <Card>
-      <h2 className="mb-3 text-sm font-semibold text-slate-900">Add sales agent</h2>
+      <h2 className="mb-3 text-base font-semibold text-navy-900">Add sales agent</h2>
       {/* Resets the uncontrolled inputs after a successful add — a fresh key
           on submit success would work too, but formAction returning undefined
           on success (see createAgentAction) means the form simply keeps

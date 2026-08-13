@@ -7,8 +7,15 @@ const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 const sale = (id: string, entries: Array<[Date, bigint, bigint]>) => ({
   id,
   currency: 'KES',
-  buyer: { fullName: `Buyer ${id}`, phone: '+254712345678', email: `${id}@example.com` },
-  project: { name: 'Riverside Court' },
+  buyer: {
+    // The row carries the buyer's id as well as their name: the report counts
+    // distinct buyers, and one buyer can hold two contracts.
+    id: `buyer-${id}`,
+    fullName: `Buyer ${id}`,
+    phone: '+254712345678',
+    email: `${id}@example.com`
+  },
+  project: { id: 'project-riverside', name: 'Riverside Court' },
   unit: { name: '4C' },
   scheduleEntries: entries.map(([dueDate, amountDueMinor, amountPaidMinor]) => ({
     dueDate,
@@ -66,6 +73,12 @@ describe('buildArrearsRows', () => {
     expect(rows[0].buyerPhone).toBe('+254712345678')
     expect(rows[0].currency).toBe('KES')
     expect(rows[0].unitName).toBe('4C')
+  })
+
+  it('carries the buyer and project ids the report groups and filters by', () => {
+    const rows = buildArrearsRows([sale('f', [[utc(2026, 6, 10), 300n, 0n]])], asOf)
+    expect(rows[0].buyerId).toBe('buyer-f')
+    expect(rows[0].projectId).toBe('project-riverside')
   })
 })
 

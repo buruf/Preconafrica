@@ -1,7 +1,7 @@
 'use client'
 
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, Card, ErrorText, Field, PageHeader } from '@/components/ui'
+import { Button, Card, ErrorText, Field, PageHeader, Select } from '@/components/ui'
 import { SUPPORTED_CURRENCIES } from '@/domain/currency'
 import { UNIT_PATTERN_PRESETS } from '@/domain/units'
 import { createProjectAction } from '../actions'
@@ -20,7 +20,10 @@ export function NewProjectForm() {
 
   return (
     <>
-      <PageHeader title="New project" />
+      <PageHeader
+        title="New project"
+        subtitle="Every unit is generated from the floors, the units per floor and the naming pattern below."
+      />
 
       <Card>
         <form action={formAction} className="space-y-4">
@@ -35,17 +38,13 @@ export function NewProjectForm() {
             required
             hint="Prices for this project are set and displayed in this currency."
           >
-            <select
-              name="currency"
-              required
-              className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base"
-            >
+            <Select name="currency" required>
               {Object.keys(SUPPORTED_CURRENCIES).map((code) => (
                 <option key={code} value={code}>
                   {code}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
           <Field label="Expected completion" name="expectedCompletion" type="date" required />
@@ -70,19 +69,16 @@ export function NewProjectForm() {
             required
             hint="{floor} is the floor number, {index:02} a zero-padded count, {letter} a letter."
           >
-            <select
-              name="namingPattern"
-              className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base"
-            >
+            <Select name="namingPattern">
               {UNIT_PATTERN_PRESETS.map((preset) => (
                 <option key={preset.pattern} value={preset.pattern}>
                   {preset.label}
                 </option>
               ))}
-            </select>
+            </Select>
           </Field>
 
-          <p className="text-xs text-slate-500">
+          <p className="text-[13px] text-muted">
             These apply to every generated unit. Edit individual units afterwards.
           </p>
 
@@ -102,13 +98,10 @@ export function NewProjectForm() {
             name="installmentFeeMode"
             hint="A percentage of the financed amount, or one flat amount whatever the unit costs. Choose a fixed amount where charging interest is not permissible."
           >
-            <select
-              name="installmentFeeMode"
-              className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base"
-            >
+            <Select name="installmentFeeMode">
               <option value="PERCENT">A percentage of the financed amount</option>
               <option value="FIXED">A fixed amount</option>
-            </select>
+            </Select>
           </Field>
 
           <Field

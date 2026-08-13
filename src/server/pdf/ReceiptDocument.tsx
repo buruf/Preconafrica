@@ -32,9 +32,25 @@ export interface ReceiptProps {
 const date = (d: Date) => d.toISOString().slice(0, 10)
 const methodLabel = (m: string) => m.replace(/_/g, ' ').toLowerCase()
 
+/**
+ * Proof that money arrived.
+ *
+ * It shares the invoice's letterhead, and now the invoice's *layout* too: the
+ * same `blockTitle` captions, the same bordered status word, and the same amount
+ * panel carrying the one figure the reader came for. It was the odd one out — a
+ * flat list of label/value rows with the sum buried in the middle — which meant
+ * a buyer holding an invoice and its receipt was holding two documents that
+ * looked like they came from different systems.
+ */
 export function ReceiptDocument(props: ReceiptProps) {
+  const money = (amount: bigint) => formatMinor(amount, props.currency)
+
   return (
-    <Document>
+    <Document
+      title={`Receipt ${props.number}`}
+      author={props.orgName}
+      subject={`Payment received — Unit ${props.unitName}, ${props.projectName}`}
+    >
       <Page size="A4" style={styles.page}>
         {/* The same letterhead the invoice and statement carry. A receipt is the
             document a buyer waves at a site office, and it was the one going out
@@ -52,55 +68,88 @@ export function ReceiptDocument(props: ReceiptProps) {
           <Text style={styles.void}>VOID — {props.voidReason ?? 'this payment was reversed'}</Text>
         ) : null}
 
-        <View style={styles.section}>
-          <Text style={styles.label}>Received from</Text>
-          <Text>{props.buyerName}</Text>
-          <Text style={styles.muted}>Unit {props.unitName}</Text>
-        </View>
-
-        <View style={styles.section}>
-          <View style={styles.row}>
-            <Text style={styles.label}>Date received</Text>
-            <Text>{date(props.receivedAt)}</Text>
+        <View style={styles.twoCol}>
+          <View style={styles.col}>
+            <Text style={styles.blockTitle}>RECEIVED FROM</Text>
+            <Text style={styles.strong}>{props.buyerName}</Text>
+            <Text style={styles.muted}>Unit {props.unitName}</Text>
+            <Text style={styles.muted}>{props.projectName}</Text>
           </View>
-          <View style={styles.row}>
-            <Text style={styles.label}>Method</Text>
-            <Text>{methodLabel(props.method)}</Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={styles.label}>Reference</Text>
-            <Text>{props.reference ?? '—'}</Text>
-          </View>
-          <View style={styles.total}>
-            <Text>Amount received</Text>
-            <Text>{formatMinor(props.amountMinor, props.currency)}</Text>
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.label}>Applied to</Text>
-          <View style={styles.tableHeader}>
-            <Text style={styles.colSeq}>#</Text>
-            <Text style={styles.colDate}>Due date</Text>
-            <Text style={styles.colAmount}>Applied</Text>
-          </View>
-          {props.allocations.map((a) => (
-            <View key={a.sequence} style={styles.tableRow}>
-              {/* A payment that settles the deposit says so. "0" in the
-                  applied-to column is the sequence number, not an amount, and
-                  reads on a receipt like a payment applied to nothing. */}
-              <Text style={styles.colSeq}>{scheduleEntryLabel(a.sequence)}</Text>
-              <Text style={styles.colDate}>{date(a.dueDate)}</Text>
-              <Text style={styles.colAmount}>{formatMinor(a.amountMinor, props.currency)}</Text>
+          <View style={styles.col}>
+            <Text style={styles.blockTitle}>PAYMENT</Text>
+            <View style={styles.factRow}>
+              <Text style={styles.factLabel}>Date received</Text>
+              <Text>{date(props.receivedAt)}</Text>
             </View>
-          ))}
-          <View style={styles.total}>
-            <Text>Balance remaining</Text>
-            <Text>{formatMinor(props.balanceMinor, props.currency)}</Text>
+            <View style={styles.factRow}>
+              <Text style={styles.factLabel}>Method</Text>
+              <Text>{methodLabel(props.method)}</Text>
+            </View>
+            <View style={styles.factRow}>
+              <Text style={styles.factLabel}>Reference</Text>
+              <Text>{props.reference ?? '—'}</Text>
+            </View>
           </View>
         </View>
 
-        <Text style={styles.footer}>{props.orgName} · Receipt {props.number}</Text>
+        {/* The invoice's amount panel, with the figure that arrived rather than
+            the figure demanded. The status word is bordered, not filled, so it
+            survives a mono print — and a voided receipt says so twice, here and
+            in the line above, because a struck payment that reads as a valid one
+            is the worst thing this document could do. */}
+        <View style={styles.amountPanel}>
+          <View>
+            <Text style={styles.entryLabel}>Amount received</Text>
+            <Text style={styles.muted}>
+              {date(props.receivedAt)} · {methodLabel(props.method)}
+            </Text>
+            <Text
+              style={[styles.statusMark, props.voided ? styles.statusOverdue : styles.statusPaid]}
+            >
+              {props.voided ? 'VOIDED' : 'RECEIVED'}
+            </Text>
+          </View>
+          <View style={styles.amountPanelRight}>
+            <Text style={styles.blockTitle}>PAID</Text>
+            <Text style={styles.amountFigure}>{money(props.amountMinor)}</Text>
+          </View>
+        </View>
+        <Text style={[styles.muted, styles.statusNote]}>
+          {props.voided
+            ? 'This receipt has been voided. The payment it recorded no longer counts towards the balance.'
+            : 'Applied to the installments below in due-date order. Keep this receipt.'}
+        </Text>
+
+        <Text style={styles.sectionHeading}>Applied to</Text>
+        <View style={styles.tableHeader}>
+          <Text style={styles.colSeq}>#</Text>
+          <Text style={styles.colDate}>DUE DATE</Text>
+          <Text style={styles.colAmount}>APPLIED</Text>
+        </View>
+        {props.allocations.map((allocation) => (
+          <View key={allocation.sequence} style={styles.tableRow} wrap={false}>
+            {/* A payment that settles the deposit says so. "0" in the applied-to
+                column is the sequence number, not an amount, and reads on a
+                receipt like a payment applied to nothing. */}
+            <Text style={styles.colSeq}>{scheduleEntryLabel(allocation.sequence)}</Text>
+            <Text style={styles.colDate}>{date(allocation.dueDate)}</Text>
+            <Text style={styles.colAmount}>{money(allocation.amountMinor)}</Text>
+          </View>
+        ))}
+
+        <View style={styles.summaryTotal}>
+          <Text>Balance remaining</Text>
+          <Text style={styles.figure}>{money(props.balanceMinor)}</Text>
+        </View>
+
+        <Text
+          style={styles.footer}
+          render={({ pageNumber, totalPages }) =>
+            `${props.orgName} · Receipt ${props.number}` +
+            (totalPages > 1 ? ` · Page ${pageNumber} of ${totalPages}` : '')
+          }
+          fixed
+        />
       </Page>
     </Document>
   )

@@ -1,14 +1,20 @@
 import { requireAdmin } from '@/server/session'
 import { getOrganization, listTeam } from '@/server/services/team'
-import { Card, PageHeader } from '@/components/ui'
+import { Card, PageHeader, StatusPill } from '@/components/ui'
 import { AddAgentForm } from './AddAgentForm'
 import { DeactivateControl } from './DeactivateControl'
 import { OrganizationForm } from './OrganizationForm'
 
-const ROLE_TONE: Record<'ADMIN' | 'AGENT', string> = {
-  ADMIN: 'bg-slate-100 text-slate-700',
-  AGENT: 'bg-sky-100 text-sky-800'
-}
+/**
+ * A role is not a status, so it does not borrow the status triples — an ADMIN is
+ * not "paid" and an AGENT is not "reserved", and colouring them from that table
+ * would teach the reader a meaning that is not there. Both roles get the same
+ * quiet navy tint from DESIGN.md, and the word does the distinguishing.
+ *
+ * Deactivation *is* a status, so it gets the overdue pill through `StatusPill`
+ * below, which is also the app's only red badge.
+ */
+const ROLE_TONE = 'bg-navy-100 text-navy-900'
 
 export default async function TeamPage() {
   // ADMIN-only: an agent has no business seeing the team list, so this
@@ -35,22 +41,20 @@ export default async function TeamPage() {
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-medium">{member.fullName}</p>
+                      <p className="text-[15px] font-semibold text-navy-900">{member.fullName}</p>
                       <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_TONE[member.role]}`}
+                        className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${ROLE_TONE}`}
                       >
                         {member.role}
                       </span>
                       {!member.active ? (
-                        <span className="inline-block rounded-full bg-rose-100 px-2 py-0.5 text-xs font-medium text-rose-800">
-                          Deactivated
-                        </span>
+                        <StatusPill status="OVERDUE">Deactivated</StatusPill>
                       ) : null}
                       {member.id === actor.userId ? (
-                        <span className="text-xs text-slate-500">(you)</span>
+                        <span className="text-[13px] text-muted">(you)</span>
                       ) : null}
                     </div>
-                    <p className="text-sm text-slate-500">{member.email}</p>
+                    <p className="text-[13px] text-muted">{member.email}</p>
                   </div>
 
                   {/* Only active AGENT rows get a deactivate control: an

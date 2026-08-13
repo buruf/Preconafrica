@@ -1,7 +1,7 @@
 'use client'
 
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, Field } from '@/components/ui'
+import { Button, Field, Select } from '@/components/ui'
 import { recordPaymentAction } from './actions'
 
 const METHODS: Array<{ value: string; label: string }> = [
@@ -41,10 +41,16 @@ export function PaymentForm({ saleId }: { saleId: string }) {
       <input type="hidden" name="saleId" value={saleId} />
 
       {message ? (
+        // The two tones come straight out of DESIGN.md's status table: an
+        // overpayment is the "partial / reserved" amber (it worked, but read
+        // this), a failure is the overdue red. Both are the triples, so this
+        // notice cannot end up a slightly different amber from a pill.
         <p
           role="status"
-          className={`rounded-lg px-3 py-2 text-sm ${
-            isOverpaymentNotice ? 'bg-amber-50 text-amber-800' : 'bg-rose-50 text-rose-700'
+          className={`rounded-btn border px-3 py-2 text-sm ${
+            isOverpaymentNotice
+              ? 'border-status-partial-border bg-status-partial-bg text-status-partial-text'
+              : 'border-status-overdue-border bg-status-overdue-bg text-status-overdue-text'
           }`}
         >
           {message}
@@ -58,17 +64,13 @@ export function PaymentForm({ saleId }: { saleId: string }) {
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Method" name="method">
-          <select
-            name="method"
-            defaultValue="BANK_TRANSFER"
-            className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-slate-900"
-          >
+          <Select name="method" defaultValue="BANK_TRANSFER">
             {METHODS.map((method) => (
               <option key={method.value} value={method.value}>
                 {method.label}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field label="Reference" name="reference" placeholder="Optional" />
       </div>

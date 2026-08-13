@@ -2,5 +2,16 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Mobile-first resets, unchanged: iOS must not inflate text in landscape. */
 html { -webkit-text-size-adjust: 100%; }
-body { @apply bg-slate-50 text-slate-900 antialiased; }
+
+/* Page background and body text now come from the tokens rather than from
+   Tailwind's slate scale — see docs/DESIGN.md. Nothing else in the app sets a
+   page background. */
+body { @apply bg-page text-ink antialiased; }
+
+/* Money and any other figure that can sit above another figure uses
+   `tabular-nums` (Tailwind's built-in utility) so columns line up. This rule
+   makes it the default inside a <table>, where the alternative is remembering
+   it on every cell. */
+table { font-variant-numeric: tabular-nums; }

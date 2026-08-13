@@ -18,6 +18,13 @@ export function ForgotPasswordForm() {
 
   return (
     <Card>
+      {/* The heading lives inside the card, as it does on the login page — these
+          two screens are the product's entire public surface and they should
+          read as one thing. */}
+      <h1 className="mb-1 text-xl font-semibold text-navy-900">Reset your password</h1>
+      <p className="mb-4 text-[13px] text-muted">
+        Enter the email address you sign in with and we will send you a link.
+      </p>
       <form action={formAction} className="space-y-4">
         <ErrorText>{error}</ErrorText>
         <Field
