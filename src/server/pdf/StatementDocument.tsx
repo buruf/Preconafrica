@@ -70,9 +70,32 @@ export interface StatementProps {
 
 const date = (d: Date) => d.toISOString().slice(0, 10)
 
+/**
+ * The status column, in DESIGN.md's status colours — the same four the app draws
+ * a `StatusPill` with, so a buyer comparing their dashboard to their statement
+ * sees one palette rather than two.
+ *
+ * A coloured *word*, not a filled pill: these are printed on mono lasers, and a
+ * word survives that where a tint does not. The style objects also carry a
+ * `borderColor`, which is inert here (no `borderWidth`) and is the reason the
+ * bordered marks on the invoice and the receipt cannot drift from this column.
+ */
+const STATUS_STYLE: Record<InstallmentStatus, (typeof styles)['statusPaid']> = {
+  PAID: styles.statusPaid,
+  PARTIAL: styles.statusPartial,
+  OVERDUE: styles.statusOverdue,
+  PENDING: styles.statusPending
+}
+
 export function StatementDocument(props: StatementProps) {
   return (
-    <Document>
+    <Document
+      // Named like the invoice's and the receipt's, so all three arrive in a
+      // buyer's downloads folder with a title rather than as "Untitled".
+      title={`Statement ${props.number}`}
+      author={props.orgName}
+      subject={`Payment statement — Unit ${props.unitName}, ${props.projectName}`}
+    >
       <Page size="A4" style={styles.page}>
         {/* The same letterhead the invoice and receipt carry, logo and all —
             this document was printing the org's name in a plain header while the
@@ -118,26 +141,30 @@ export function StatementDocument(props: StatementProps) {
           </View>
           <View style={styles.row}>
             <Text style={styles.label}>Purchase price</Text>
-            <Text>{formatMinor(props.priceMinor, props.currency)}</Text>
+            <Text style={styles.figure}>{formatMinor(props.priceMinor, props.currency)}</Text>
           </View>
           <View style={styles.row}>
             <Text style={styles.label}>Deposit (due at signing)</Text>
-            <Text>{formatMinor(props.depositMinor, props.currency)}</Text>
+            <Text style={styles.figure}>{formatMinor(props.depositMinor, props.currency)}</Text>
           </View>
           {props.feeMinor > 0n ? (
             <View style={styles.row}>
+              {/* `installmentFeeLabel` quotes the rate for a PERCENT charge and
+                  quotes nothing for a FIXED one. A percentage beside a flat fee
+                  is the one thing this document must never print. */}
               <Text style={styles.label}>{installmentFeeLabel(props.fee)}</Text>
-              <Text>{formatMinor(props.feeMinor, props.currency)}</Text>
+              <Text style={styles.figure}>{formatMinor(props.feeMinor, props.currency)}</Text>
             </View>
           ) : null}
         </View>
 
+        <Text style={styles.sectionHeading}>Payment schedule</Text>
         <View style={styles.tableHeader}>
           <Text style={styles.colSeq}>#</Text>
-          <Text style={styles.colDate}>Due date</Text>
-          <Text style={styles.colAmount}>Amount</Text>
-          <Text style={styles.colPaid}>Paid</Text>
-          <Text style={styles.colStatus}>Status</Text>
+          <Text style={styles.colDate}>DUE DATE</Text>
+          <Text style={styles.colAmount}>AMOUNT</Text>
+          <Text style={styles.colPaid}>PAID</Text>
+          <Text style={styles.colStatus}>STATUS</Text>
         </View>
         {props.entries.map((entry) => (
           <View key={entry.sequence} style={styles.tableRow} wrap={false}>
@@ -145,7 +172,7 @@ export function StatementDocument(props: StatementProps) {
             <Text style={styles.colDate}>{date(entry.dueDate)}</Text>
             <Text style={styles.colAmount}>{formatMinor(entry.amountDueMinor, props.currency)}</Text>
             <Text style={styles.colPaid}>{formatMinor(entry.amountPaidMinor, props.currency)}</Text>
-            <Text style={styles.colStatus}>{entry.status}</Text>
+            <Text style={[styles.colStatus, STATUS_STYLE[entry.status]]}>{entry.status}</Text>
           </View>
         ))}
 
@@ -154,17 +181,17 @@ export function StatementDocument(props: StatementProps) {
             the rows above — is. Naming it after the schedule invited the reader
             to compare it against the purchase price and conclude the statement
             was wrong. */}
-        <View style={styles.total}>
+        <View style={styles.summaryTotal}>
           <Text>Total owed</Text>
-          <Text>{formatMinor(props.totalMinor, props.currency)}</Text>
+          <Text style={styles.figure}>{formatMinor(props.totalMinor, props.currency)}</Text>
         </View>
-        <View style={styles.total}>
-          <Text>Paid to date</Text>
-          <Text>{formatMinor(props.paidToDateMinor, props.currency)}</Text>
+        <View style={styles.summaryRow}>
+          <Text style={styles.muted}>Paid to date</Text>
+          <Text style={styles.figure}>{formatMinor(props.paidToDateMinor, props.currency)}</Text>
         </View>
-        <View style={styles.total}>
+        <View style={styles.summaryTotal}>
           <Text>Balance</Text>
-          <Text>{formatMinor(props.balanceMinor, props.currency)}</Text>
+          <Text style={styles.figure}>{formatMinor(props.balanceMinor, props.currency)}</Text>
         </View>
 
         <Text
