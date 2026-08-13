@@ -9,12 +9,25 @@ import {
   scheduleEntryLabel
 } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
-import { Card, PageHeader, StatusPill } from '@/components/ui'
+import { Card, MoneyPair, PageHeader, ProgressBar, StatCard, StatusPill } from '@/components/ui'
 import { MediaImage, UnitImagery } from '@/components/media'
 import { InvoiceControl } from './InvoiceControl'
 
 const date = (d: Date) => d.toISOString().slice(0, 10)
 
+/**
+ * The buyer's contract in full: what they owe, how far through it they are, the
+ * thing they bought, and every entry and payment behind the figures.
+ *
+ * Restyled to the mockup. Outstanding balance is the hero on a filled navy card
+ * because it is the one number a buyer opens this screen for — it used to be the
+ * third of four equal white boxes, under "Total owed", which is the figure they
+ * agreed once and never need again. Total owed is still here, under the progress
+ * bar, where it belongs: as context for the fraction rather than as the headline.
+ *
+ * Server-rendered end to end. Every amount passes through `formatMinor` here, so
+ * no bigint crosses into `InvoiceControl`.
+ */
 export default async function BuyerDashboard() {
   const actor = await requireBuyer()
   const sale = await getSaleForBuyer(actor)
@@ -22,7 +35,7 @@ export default async function BuyerDashboard() {
   if (!sale) {
     return (
       <Card>
-        <p className="text-sm text-slate-500">You do not have a unit yet.</p>
+        <p className="text-sm text-muted">You do not have a unit yet.</p>
       </Card>
     )
   }
@@ -34,6 +47,16 @@ export default async function BuyerDashboard() {
   const summary = summariseSale(sale, asOf)
   const money = (amount: bigint) => formatMinor(amount, sale.currency)
   const statement = sale.documents.find((d) => d.type === 'STATEMENT')
+
+  // The progress bar's numerator: entries that are fully settled, which is
+  // exactly what `deriveStatus` calls PAID (`outstandingMinor === 0`). Derived
+  // from the same function the pill beside each row uses, so the count can never
+  // disagree with the badges under it — and the deposit is sequence 0, an
+  // ordinary entry in this array, so it counts in both the numerator and the
+  // denominator like every other thing the buyer owes.
+  const paidEntries = sale.scheduleEntries.filter(
+    (entry) => deriveStatus(entry, asOf) === 'PAID'
+  ).length
 
   // The buyer's own copy of the fee they agreed to. Recomputed from the sale's
   // signing snapshot rather than inferred by subtracting the price from the
@@ -63,7 +86,7 @@ export default async function BuyerDashboard() {
       {/* The building, then the balance. A buyer signed a contract for something
           that does not exist yet; the one thing they came here for besides the
           numbers is a picture of it. */}
-      <div className="mb-5">
+      <div className="mb-4">
         <MediaImage
           kind="building"
           src={sale.project.heroImageUrl}
@@ -71,51 +94,55 @@ export default async function BuyerDashboard() {
         />
       </div>
 
-      <div className="mb-5 grid grid-cols-2 gap-3">
-        <Card className="col-span-2">
-          <p className="text-xs text-slate-500">Total owed</p>
-          <p className="text-lg font-semibold">{money(summary.totalOwedMinor)}</p>
+      <StatCard
+        className="mb-4"
+        surface="navy"
+        size="hero"
+        label="Outstanding balance"
+        value={money(summary.balanceMinor)}
+        sub={
+          summary.overdueCount > 0
+            ? `${summary.overdueCount} payment${summary.overdueCount === 1 ? '' : 's'} overdue`
+            : undefined
+        }
+      />
+
+      <Card className="mb-4">
+        <MoneyPair label="Paid to date" value={money(summary.paidToDateMinor)} tone="good" />
+        <div className="my-3 h-px bg-line" />
+        <MoneyPair
+          label={summary.nextDue ? `Next due ${date(summary.nextDue.dueDate)}` : 'Next due'}
+          value={summary.nextDue ? money(summary.nextDue.amountMinor) : 'Fully paid'}
+          tone={summary.nextDue ? 'default' : 'good'}
+        />
+
+        <ProgressBar
+          className="mt-4"
+          value={paidEntries}
+          total={sale.scheduleEntries.length}
+          noun="paid"
+        />
+
+        <div className="mt-4 border-t border-line pt-3">
+          <MoneyPair label="Total owed" value={money(summary.totalOwedMinor)} />
           {feeMinor > 0n ? (
-            // Empty suffix for a flat fee — see the staff twin. A buyer whose
-            // developer charges a fixed amount must not be shown a rate.
-            <p className="mt-1 text-xs text-slate-500">
+            // Empty suffix for a flat fee — see the staff twin, and
+            // `installmentFeeRateSuffix`. A buyer whose developer charges a fixed
+            // amount must never be shown a rate: deriving one would put the
+            // interest framing back on the page for a developer who chose this
+            // mode precisely so it would not be there.
+            <p className="mt-1 text-[13px] text-muted">
               includes {money(feeMinor)} installment charge
               {installmentFeeRateSuffix(saleFee)}
             </p>
           ) : null}
-        </Card>
-        <Card>
-          <p className="text-xs text-slate-500">Paid to date</p>
-          <p className="text-lg font-semibold text-emerald-700">{money(summary.paidToDateMinor)}</p>
-        </Card>
-        <Card>
-          <p className="text-xs text-slate-500">Balance</p>
-          <p className="text-lg font-semibold">{money(summary.balanceMinor)}</p>
-        </Card>
-        <Card className="col-span-2">
-          <p className="text-xs text-slate-500">Next payment due</p>
-          {summary.nextDue ? (
-            <p className="text-lg font-semibold">
-              {money(summary.nextDue.amountMinor)}{' '}
-              <span className="text-sm font-normal text-slate-500">
-                on {date(summary.nextDue.dueDate)}
-              </span>
-            </p>
-          ) : (
-            <p className="text-lg font-semibold text-emerald-700">Fully paid</p>
-          )}
-          {summary.overdueCount > 0 ? (
-            <p className="mt-1 text-sm text-rose-700">
-              {summary.overdueCount} payment{summary.overdueCount === 1 ? '' : 's'} overdue
-            </p>
-          ) : null}
-        </Card>
-      </div>
+        </div>
+      </Card>
 
       {statement ? (
         <Link
           href={`/api/documents/${statement.id}`}
-          className="mb-5 inline-flex min-h-11 items-center text-sm font-medium underline"
+          className="mb-4 inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
         >
           Download my payment statement (PDF)
         </Link>
@@ -131,16 +158,19 @@ export default async function BuyerDashboard() {
         />
       </Card>
 
-      <h2 className="mb-2 mt-6 font-semibold">Payment schedule</h2>
+      <h2 className="mb-2 text-base font-semibold text-navy-900">Payment schedule</h2>
       <Card className="p-0">
-        <ul className="divide-y divide-slate-100">
+        <ul className="divide-y divide-line">
           {sale.scheduleEntries.map((entry) => (
             <li key={entry.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
               <div className="min-w-0">
-                <p className="text-sm font-medium">
+                {/* `scheduleEntryLabel` keeps sequence 0 reading as "Deposit"
+                    here and on every document; "0." above the signing-day amount
+                    reads like a bug. */}
+                <p className="text-[15px] font-semibold tabular-nums text-ink">
                   {scheduleEntryLabel(entry.sequence)} · {date(entry.dueDate)}
                 </p>
-                <p className="text-xs text-slate-500">
+                <p className="text-[13px] tabular-nums text-muted">
                   {money(entry.amountPaidMinor)} of {money(entry.amountDueMinor)} paid
                 </p>
               </div>
@@ -156,34 +186,43 @@ export default async function BuyerDashboard() {
         </ul>
       </Card>
 
-      <h2 className="mb-2 mt-6 font-semibold">Payment history</h2>
+      <h2 className="mb-2 mt-6 text-base font-semibold text-navy-900">Payment history</h2>
       {sale.payments.length === 0 ? (
         <Card>
-          <p className="text-sm text-slate-500">No payments recorded yet.</p>
+          <p className="text-sm text-muted">No payments recorded yet.</p>
         </Card>
       ) : (
         <Card className="p-0">
-          <ul className="divide-y divide-slate-100">
+          <ul className="divide-y divide-line">
             {sale.payments.map((payment) => (
-              <li key={payment.id} className="flex items-center justify-between gap-3 p-3">
-                <div>
-                  <p className={`text-sm font-medium ${payment.voidedAt ? 'text-slate-400 line-through' : ''}`}>
+              <li key={payment.id} className="flex flex-wrap items-center justify-between gap-3 p-3">
+                <div className="min-w-0">
+                  <p
+                    className={`text-[15px] font-semibold tabular-nums ${
+                      payment.voidedAt ? 'text-muted line-through' : 'text-ink'
+                    }`}
+                  >
                     {money(payment.amountMinor)}
                   </p>
-                  <p className="text-xs text-slate-500">
+                  <p className="text-[13px] tabular-nums text-muted">
                     {date(payment.receivedAt)} · {payment.method.replace(/_/g, ' ').toLowerCase()}
                     {payment.reference ? ` · ${payment.reference}` : ''}
                   </p>
-                  {payment.voidedAt ? <p className="text-xs text-rose-700">Voided</p> : null}
                 </div>
-                {payment.document ? (
-                  <Link
-                    href={`/api/documents/${payment.document.id}`}
-                    className="inline-flex min-h-11 items-center text-sm underline"
-                  >
-                    Receipt
-                  </Link>
-                ) : null}
+                <div className="flex items-center gap-3">
+                  {/* A voided payment keeps its row — a receipt that vanished
+                      would be worse than one struck through — and says so in the
+                      overdue red, which is the palette's "this is a problem". */}
+                  {payment.voidedAt ? <StatusPill status="OVERDUE">Voided</StatusPill> : null}
+                  {payment.document ? (
+                    <Link
+                      href={`/api/documents/${payment.document.id}`}
+                      className="inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
+                    >
+                      Receipt
+                    </Link>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ul>
