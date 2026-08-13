@@ -156,9 +156,6 @@ export default async function StaffSalePage({ params }: { params: { id: string }
                   saleId={sale.id}
                   scheduleEntryId={entry.id}
                   documentId={invoiceByEntryId.get(entry.id) ?? null}
-                  // Compared here, on the server: the client component gets a
-                  // boolean, never the bigint.
-                  hasPayment={entry.amountPaidMinor > 0n}
                 />
               </div>
             </li>

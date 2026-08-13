@@ -74,16 +74,7 @@ const INVOICE: InvoiceProps = {
   dueDate: new Date('2026-03-01T00:00:00Z'),
   amountDueMinor: 641666666n,
   amountPaidMinor: 100000000n,
-  status: 'PARTIAL',
-  payments: [
-    {
-      amountMinor: 100000000n,
-      receivedAt: new Date('2026-03-02T00:00:00Z'),
-      method: 'BANK_TRANSFER',
-      reference: 'TRF-88121',
-      recordedBy: 'Tunde Bakare'
-    }
-  ]
+  status: 'PARTIAL'
 }
 
 async function render(element: ReturnType<typeof createElement>): Promise<Buffer> {

@@ -62,7 +62,7 @@ describe('the letterhead every document shares', () => {
     expect(text).toContain('Riverside Court')
     if (doc.docType === 'INVOICE') {
       expect(text).toContain('Installment 2 of 36')
-      expect(text).toContain('Still outstanding')
+      expect(text).toContain('Balance due')
     }
     if (doc.docType === 'STATEMENT') {
       expect(text).toContain('Total owed')

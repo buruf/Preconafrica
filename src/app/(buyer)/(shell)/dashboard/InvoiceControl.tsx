@@ -24,16 +24,16 @@ function IssueButton() {
  * a successful action's revalidatePath('/dashboard') is what swaps the button
  * for the download link. There is no saleId field — the buyer's sale is
  * resolved from their session, never from the form.
+ *
+ * Offered on every installment — see the staff twin. A buyer whose employer
+ * wants a bill before they transfer the money is the ordinary reason to tap it.
  */
 export function InvoiceControl({
   scheduleEntryId,
-  documentId,
-  /** Server-decided, and a boolean rather than a `bigint` — see the staff twin. */
-  hasPayment
+  documentId
 }: {
   scheduleEntryId: string
   documentId: string | null
-  hasPayment: boolean
 }) {
   const [error, formAction] = useFormState(issueOwnInvoiceAction, undefined)
 
@@ -45,17 +45,6 @@ export function InvoiceControl({
       >
         Invoice
       </Link>
-    )
-  }
-
-  // The absence is explained rather than mysterious: a buyer who has not paid
-  // anything toward this month sees why there is nothing to download, not a
-  // button that fails.
-  if (!hasPayment) {
-    return (
-      <p className="inline-flex min-h-11 items-center text-xs text-slate-500">
-        Invoice available once a payment is recorded
-      </p>
     )
   }
 

@@ -153,16 +153,7 @@ export const INVOICE: InvoiceProps = {
   dueDate: new Date('2026-03-10T00:00:00Z'),
   amountDueMinor: 18333333n,
   amountPaidMinor: 11666667n,
-  status: 'OVERDUE',
-  payments: [
-    {
-      amountMinor: 11666667n,
-      receivedAt: new Date('2026-03-12T00:00:00Z'),
-      method: 'BANK_TRANSFER',
-      reference: 'TRF-0114',
-      recordedBy: 'Tunde Bakare'
-    }
-  ]
+  status: 'OVERDUE'
 }
 
 export const STATEMENT: StatementProps = {

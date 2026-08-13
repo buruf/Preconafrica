@@ -2,7 +2,6 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { prisma } from '@/server/db'
 import { ServiceError } from '@/server/services/errors'
 import { InvoiceDocument } from '@/server/pdf/InvoiceDocument'
-import { buildInvoicePaymentRows } from '@/server/pdf/invoice-payments'
 import { ReceiptDocument } from '@/server/pdf/ReceiptDocument'
 import { StatementDocument } from '@/server/pdf/StatementDocument'
 import { deriveStatus } from '@/domain/status'
@@ -82,36 +81,12 @@ export async function renderDocumentPdf(
     const entry = doc.scheduleEntry
     if (!entry) throw new ServiceError('Invoice is missing its installment', 'NOT_FOUND')
 
-    // The payments the invoice itemises. Loaded from the allocations rather than
-    // from the sale's payments, because what belongs on this invoice is what
-    // landed on *this* installment — a payment that spilled over from the
-    // previous one appears here for the part that reached this entry, and for
-    // nothing more. Voiding a payment deletes its allocations, so a voided
-    // payment falls out of this query on its own with no filter to maintain (and
-    // none to get wrong: the entry's amountPaidMinor is recomputed in the same
-    // transaction, so the rows and the totals stay in step).
-    const allocations = await prisma.paymentAllocation.findMany({
-      where: { scheduleEntryId: entry.id },
-      include: { payment: true },
-      orderBy: { payment: { receivedAt: 'asc' } }
-    })
-
-    // `Payment.recordedByUserId` is a plain column with no relation, so the
-    // names cannot come along with the include. One batched query for the
-    // distinct ids, never one per row — an installment settled by a dozen small
-    // cash payments would otherwise cost a dozen round trips per download.
-    const recorderIds = [...new Set(allocations.map((a) => a.payment.recordedByUserId))]
-    const recorders = recorderIds.length
-      ? await prisma.user.findMany({
-          where: { id: { in: recorderIds }, orgId },
-          select: { id: true, fullName: true }
-        })
-      : []
-    const payments = buildInvoicePaymentRows(
-      allocations,
-      new Map(recorders.map((user) => [user.id, user.fullName]))
-    )
-
+    // No allocation query here, deliberately. An invoice is a demand for
+    // payment, not a proof of one: the only figures it needs are the entry's
+    // own `amountDueMinor` and `amountPaidMinor`, both already loaded above.
+    // The itemised trail — dates, methods, references, who recorded what — is
+    // the receipt's, and rendering it on both made the two documents say the
+    // same thing with different authority.
     return {
       filename,
       buffer: await renderToBuffer(
@@ -139,7 +114,6 @@ export async function renderDocumentPdf(
           // The same instant `summariseSale` above used, so the status mark on
           // the invoice cannot disagree with any other figure on it.
           status={deriveStatus(entry, asOf)}
-          payments={payments}
         />
       )
     }

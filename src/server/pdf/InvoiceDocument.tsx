@@ -2,7 +2,6 @@ import { Document, Page, Text, View } from '@react-pdf/renderer'
 import { styles } from '@/server/pdf/styles'
 import { Masthead } from '@/server/pdf/Masthead'
 import type { PdfImage } from '@/server/media/images'
-import type { InvoicePaymentRow } from '@/server/pdf/invoice-payments'
 import { formatMinor } from '@/domain/currency'
 import { DEPOSIT_SEQUENCE } from '@/domain/schedule'
 import { outstandingMinor, type InstallmentStatus } from '@/domain/status'
@@ -38,24 +37,28 @@ export interface InvoiceProps {
   dueDate: Date
   amountDueMinor: bigint
   /**
-   * The entry's maintained total, which is the sum of the allocations listed in
-   * `payments`. Used for both the paid-so-far and outstanding figures so the two
-   * cannot disagree with each other, whatever the rows happen to add up to.
+   * The entry's own maintained total — the single source for both the
+   * paid-so-far line and the outstanding figure, so the two cannot disagree.
+   *
+   * A bill states what remains outstanding, and it needs this to do that. What
+   * it deliberately does not do is itemise *how* that total was reached: the
+   * dates, methods, references and recorder names of the payments behind it are
+   * the receipt's audit trail, and reproducing them here made a demand for
+   * payment read like a proof of payment. Derived from the entry, never from
+   * allocation rows.
    */
   amountPaidMinor: bigint
   /** Derived by the caller with `deriveStatus`, so "now" is decided once. */
   status: InstallmentStatus
-  /** Every payment allocated to this installment, oldest first. */
-  payments: InvoicePaymentRow[]
 }
 
 const date = (d: Date) => d.toISOString().slice(0, 10)
-const methodLabel = (m: string) => m.replace(/_/g, ' ').toLowerCase()
 
 /**
- * The status treatment. An invoice can only be issued once something has been
- * paid, so PENDING is unreachable on a fresh one — but an invoice issued and
- * then voided back to zero keeps its document, and it still has to print.
+ * The status treatment. All four are reachable: an invoice is issuable for any
+ * installment, so a brand-new one on an installment nothing has been paid
+ * against prints PENDING (or OVERDUE, past its date), which is the ordinary
+ * case for a bill.
  */
 const STATUS_MARK: Record<
   InstallmentStatus,
@@ -155,46 +158,26 @@ export function InvoiceDocument(props: InvoiceProps) {
         </View>
         <Text style={[styles.muted, styles.statusNote]}>{statusNote(props.status, props.dueDate)}</Text>
 
-        <Text style={styles.blockTitle}>PAYMENTS RECEIVED AGAINST THIS INSTALLMENT</Text>
-        {props.payments.length === 0 ? (
-          <Text style={styles.emptyNote}>No payments are recorded against this installment.</Text>
-        ) : (
-          <>
-            <View style={styles.tableHeader}>
-              <Text style={styles.colPayDate}>Received</Text>
-              <Text style={styles.colPayMethod}>Method</Text>
-              <Text style={styles.colPayRef}>Reference</Text>
-              <Text style={styles.colPayBy}>Recorded by</Text>
-              <Text style={styles.colPayAmount}>Applied</Text>
-            </View>
-            {props.payments.map((payment, index) => (
-              <View
-                // Nothing here is unique on its own — one payment can be split
-                // across installments and two cash payments can share a day and
-                // an amount — and the list is a stable ordered render, so the
-                // index is the honest key.
-                key={`${date(payment.receivedAt)}-${index}`}
-                style={styles.tableRow}
-                wrap={false}
-              >
-                <Text style={styles.colPayDate}>{date(payment.receivedAt)}</Text>
-                <Text style={styles.colPayMethod}>{methodLabel(payment.method)}</Text>
-                <Text style={styles.colPayRef}>{payment.reference ?? '—'}</Text>
-                <Text style={styles.colPayBy}>{payment.recordedBy}</Text>
-                <Text style={styles.colPayAmount}>{money(payment.amountMinor)}</Text>
-              </View>
-            ))}
-          </>
-        )}
-
+        {/* What a bill owes the reader and nothing more: the scheduled amount,
+            anything already credited against it, and the balance being asked
+            for. Both figures come from `amountDueMinor`/`amountPaidMinor`, so
+            no allocation row is read and no payment is itemised — that detail
+            belongs to the receipt. */}
         <View style={styles.summaryRow}>
-          <Text style={styles.muted}>Paid so far</Text>
+          <Text style={styles.muted}>Amount scheduled</Text>
+          <Text>{money(props.amountDueMinor)}</Text>
+        </View>
+        <View style={styles.summaryRow}>
+          <Text style={styles.muted}>Already paid</Text>
           <Text>{money(props.amountPaidMinor)}</Text>
         </View>
         <View style={styles.summaryTotal}>
-          <Text>Still outstanding</Text>
+          <Text>Balance due</Text>
           <Text>{money(outstanding)}</Text>
         </View>
+        <Text style={[styles.muted, styles.emptyNote]}>
+          A receipt is issued for every payment received and lists its date, method and reference.
+        </Text>
 
         <Text
           style={styles.footer}

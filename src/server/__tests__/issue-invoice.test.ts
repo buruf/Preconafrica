@@ -3,21 +3,25 @@ import { ServiceError } from '@/server/services/errors'
 import type { SessionActor } from '@/server/session'
 
 /**
- * `issueInvoice` now has four ordered decisions, and the order is the whole
- * point:
+ * `issueInvoice` has three ordered decisions, and the order is the whole point:
  *
  *   1. is this installment the caller's to see at all?  -> NOT_FOUND
  *   2. does an invoice already exist?                   -> return it
- *   3. has anything been paid against it?               -> CONFLICT if not
- *   4. create.
+ *   3. create.
  *
- * (1) before (3) is an information-disclosure property: if the payment gate ran
- * first, "no payment has been recorded" would confirm the existence of an
- * installment to someone with no right to know it exists, and the NOT_FOUND that
- * makes a guessed id indistinguishable from another buyer's would be undone.
+ * (1) coming first is an information-disclosure property: another buyer's
+ * scheduleEntryId, a cross-org one and a nonexistent one must all be
+ * indistinguishable, so nothing may answer before the scoped read has.
  *
- * (2) before (3) is a durability property: an invoice legitimately issued and
- * then voided back to zero must keep downloading.
+ * (2) is idempotency: a buyer who taps twice, or an agent re-billing the same
+ * month, gets the document that already exists rather than a second one. The
+ * unique constraint behind it is what makes a genuine race safe, and the P2002
+ * path is exercised below.
+ *
+ * There is deliberately no fourth decision. An invoice is an ordinary demand
+ * for payment, so what has been allocated against the installment is none of
+ * this function's business — the receipt is the payment-proof document. The
+ * zero-paid cases below pin that: they must succeed, not be refused.
  *
  * A fake prisma is what makes the *order* assertable — every case here is about
  * which check fired, not about arithmetic.
@@ -34,6 +38,7 @@ const { prisma } = await import('@/server/db')
 const { issueInvoice } = await import('@/server/documents/issue')
 
 const findFirst = prisma.scheduleEntry.findFirst as unknown as ReturnType<typeof vi.fn>
+const documentFindFirst = prisma.document.findFirst as unknown as ReturnType<typeof vi.fn>
 const $transaction = prisma.$transaction as unknown as ReturnType<typeof vi.fn>
 
 const staff: SessionActor = {
@@ -71,26 +76,23 @@ function creates(documentId: string) {
   })
 }
 
-describe('issueInvoice payment gate', () => {
+describe('issueInvoice is a demand for payment, not a proof of one', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('refuses an installment with nothing paid against it', async () => {
+  it('issues for an installment with nothing paid against it', async () => {
+    // The behaviour this whole file exists to pin. A bill is the thing you send
+    // *before* the money arrives; refusing one until a payment had been recorded
+    // made the platform unable to ask for the payment in the first place.
     findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n }))
+    creates('doc_new')
 
-    const failure = await issueInvoice(staff, 'entry_1').catch((error: unknown) => error)
-
-    expect(failure).toBeInstanceOf(ServiceError)
-    expect((failure as ServiceError).code).toBe('CONFLICT')
-    // The message has to tell the user what to do, not just that they cannot.
-    expect((failure as ServiceError).message).toMatch(/payment has been recorded/i)
-    // Refused before any document was minted, so the org's sequence is not
-    // burned by an attempt that could never succeed.
-    expect($transaction).not.toHaveBeenCalled()
+    await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_new' })
+    expect($transaction).toHaveBeenCalledOnce()
   })
 
-  it('allows an installment that is only partly paid', async () => {
+  it('issues for an installment that is only partly paid', async () => {
     findFirst.mockResolvedValue(entry({ amountPaidMinor: 11666667n }))
     creates('doc_new')
 
@@ -98,17 +100,38 @@ describe('issueInvoice payment gate', () => {
     expect($transaction).toHaveBeenCalledOnce()
   })
 
-  it('allows an installment that is settled in full', async () => {
+  it('issues for an installment that is settled in full', async () => {
     findFirst.mockResolvedValue(entry({ amountPaidMinor: 18333333n }))
     creates('doc_new')
 
     await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_new' })
   })
 
-  it('reports NOT_FOUND — not the payment gate — for an installment outside the actor org', async () => {
+  it('never reads the paid amount to decide anything', async () => {
+    // Belt-and-braces against the gate creeping back in a different shape: a
+    // getter that throws if anything touches the field. Whatever it does with
+    // the entry, `issueInvoice` must not consult what has been paid.
+    const trap = {
+      ...entry({ amountPaidMinor: 0n }),
+      get amountPaidMinor(): bigint {
+        throw new Error('issueInvoice must not read amountPaidMinor')
+      }
+    }
+    findFirst.mockResolvedValue(trap)
+    creates('doc_new')
+
+    await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_new' })
+  })
+})
+
+describe('issueInvoice scoping and idempotency', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('reports NOT_FOUND for an installment outside the actor org', async () => {
     // What a cross-org (or nonexistent, or another buyer's) id looks like: the
-    // scoped read simply finds nothing. The zero-paid entry it names is real in
-    // the database; the point is that this caller learns nothing about it.
+    // scoped read simply finds nothing, and nothing downstream may answer first.
     findFirst.mockResolvedValue(null)
 
     const failure = await issueInvoice(staff, 'entry_in_another_org').catch(
@@ -117,25 +140,59 @@ describe('issueInvoice payment gate', () => {
 
     expect(failure).toBeInstanceOf(ServiceError)
     expect((failure as ServiceError).code).toBe('NOT_FOUND')
-    expect((failure as ServiceError).message).not.toMatch(/payment/i)
-  })
-
-  it('still returns the existing invoice, even after the payment behind it was voided', async () => {
-    // Voiding deletes the allocations, so the entry is back to zero paid — and
-    // the document the buyer already has must keep working.
-    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n, document: { id: 'doc_existing' } }))
-
-    await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_existing' })
     expect($transaction).not.toHaveBeenCalled()
   })
 
-  it('returns the existing invoice for a still-paid installment without creating a second', async () => {
+  it('returns the existing invoice without creating a second', async () => {
     findFirst.mockResolvedValue(
       entry({ amountPaidMinor: 11666667n, document: { id: 'doc_existing' } })
     )
 
     await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_existing' })
     expect($transaction).not.toHaveBeenCalled()
+  })
+
+  it('still returns the existing invoice after the payment behind it was voided', async () => {
+    // Voiding deletes the allocations, so the entry is back to zero paid — and
+    // the document the buyer already holds must keep working.
+    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n, document: { id: 'doc_existing' } }))
+
+    await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_existing' })
+    expect($transaction).not.toHaveBeenCalled()
+  })
+
+  it('turns a lost create race into the winner’s document rather than a 500', async () => {
+    // Two taps land at once: the pre-check is a read, not a lock, so both reach
+    // the transaction and `Document.scheduleEntryId @unique` decides. The loser
+    // must get the same success the winner got.
+    const { Prisma } = await import('@prisma/client')
+    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n }))
+    $transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: { target: ['scheduleEntryId'] }
+      })
+    )
+    documentFindFirst.mockResolvedValue({ id: 'doc_winner' })
+
+    await expect(issueInvoice(staff, 'entry_1')).resolves.toEqual({ documentId: 'doc_winner' })
+    expect(documentFindFirst).toHaveBeenCalledWith({ where: { scheduleEntryId: 'entry_1' } })
+  })
+
+  it('rethrows a P2002 on some other constraint rather than claiming a race', async () => {
+    const { Prisma } = await import('@prisma/client')
+    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n }))
+    $transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: 'test',
+        meta: { target: ['orgId', 'number'] }
+      })
+    )
+
+    await expect(issueInvoice(staff, 'entry_1')).rejects.toThrow(/Unique constraint failed/)
+    expect(documentFindFirst).not.toHaveBeenCalled()
   })
 
   it('refuses a BUYER session with no buyerId before reading anything', async () => {
