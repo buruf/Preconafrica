@@ -24,11 +24,32 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
  * Every tree where a figure can end up in a schedule, an allocation, an
  * invoice, an email or a database column.
  *
- * `src/app` is deliberately not here: it is the presentation layer, and the two
+ * `src/app` is not a whole-tree root: it is mostly presentation, and the three
  * screens that render the line live in it. `src/components` is not here for the
- * same reason — it is where the module itself lives.
+ * same reason — it is where the module itself lives. But `src/app` is *also*
+ * where every write path in this app lives, so it gets its own filtered sweep
+ * below — see `WRITE_PATH`.
  */
 const MONEY_ROOTS = ['src/domain', 'src/server', 'prisma']
+
+/**
+ * The write paths, which happen to live under `src/app` rather than under
+ * `src/server`.
+ *
+ * This is the gap the roots above cannot close. `actions.ts` files are
+ * `'use server'` modules — the sell flow's calls `createSale` — and `route.ts`
+ * files are the HTTP handlers. Both decide money and both persist it, and in this
+ * app both sit next to the screens in `src/app`. An import of an approximate,
+ * hand-maintained exchange rate in either is exactly the failure this whole
+ * module is arranged to prevent, so it is prohibited with the same strictness as
+ * an import under `src/domain` — not merely recorded in the snapshot list at the
+ * bottom of this file, whose message invites a reader to append a new call site.
+ *
+ * Deliberately by filename rather than by content: a file is a write path
+ * because of where Next will run it, and `'use server'` can be added to an
+ * `actions.ts` in the same diff that adds the bad import.
+ */
+const WRITE_PATH = /(?:^|[\\/])(?:actions|route)\.tsx?$/
 
 /** Anything that would reach this module, by import or by re-export. */
 const REFERENCE = /indicative-usd|indicativeUsd/
@@ -124,6 +145,36 @@ describe('the indicative rate is unreachable from any money path', () => {
     }
   })
 
+  it('has write paths under src/app to check', () => {
+    // If a refactor moves the actions and routes elsewhere, this fails loudly
+    // rather than letting the sweep below pass over an empty list.
+    const writePaths = sourceFilesUnder(path.join(REPO_ROOT, 'src/app')).filter((file) =>
+      WRITE_PATH.test(file)
+    )
+    expect(writePaths.length, 'src/app should contain actions.ts / route.ts files').toBeGreaterThan(
+      0
+    )
+    // And the sell flow's server action specifically — the one that calls
+    // `createSale`, and the reason this sweep exists.
+    expect(
+      writePaths
+        .map((file) => path.relative(REPO_ROOT, file).replace(/\\/g, '/'))
+        .includes('src/app/(staff)/(shell)/projects/[id]/sell/[unitId]/actions.ts')
+    ).toBe(true)
+  })
+
+  it('is not imported by any server action or route handler under src/app', () => {
+    // Prohibited, not recorded. These are the money writes.
+    for (const file of sourceFilesUnder(path.join(REPO_ROOT, 'src/app'))) {
+      if (!WRITE_PATH.test(file)) continue
+      const relative = path.relative(REPO_ROOT, file).replace(/\\/g, '/')
+      expect(
+        REFERENCE.test(readFileSync(file, 'utf8')),
+        `${relative} must not reach the indicative USD rate — it is approximate, and this file writes money`
+      ).toBe(false)
+    }
+  })
+
   it('imports nothing itself, so it cannot pull the money core in either', () => {
     const src = readFileSync(path.join(REPO_ROOT, 'src/components/indicative-usd.ts'), 'utf8')
 
@@ -131,10 +182,12 @@ describe('the indicative rate is unreachable from any money path', () => {
     expect(src).not.toMatch(/(?:from\s+|require\(\s*|import\(\s*)['"]/)
   })
 
-  it('is drawn only by the two presentational screens that show a price', () => {
-    // Not a cap on where it *could* go — `src/app` is allowed — but a record of
-    // where it does, so a third call site is a deliberate decision rather than a
-    // diff nobody read.
+  it('is drawn only by the three presentational screens that show a price', () => {
+    // Not a cap on where it *could* go — a page or a layout under `src/app` is
+    // allowed — but a record of where it does, so a fourth call site is a
+    // deliberate decision rather than a diff nobody read. The write paths under
+    // the same tree are *not* covered by this leniency: the test above prohibits
+    // them outright, so a new entry here can only ever be another screen.
     const drawn = sourceFilesUnder(path.join(REPO_ROOT, 'src/app'))
       .filter((file) => REFERENCE.test(readFileSync(file, 'utf8')))
       .map((file) => path.relative(REPO_ROOT, file).replace(/\\/g, '/'))

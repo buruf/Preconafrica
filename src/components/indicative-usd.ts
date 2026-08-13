@@ -11,8 +11,14 @@
  * Concretely, this module must never be reachable from:
  *
  *   - `src/domain/**`   — the money core: schedules, allocation, currency
- *   - `src/server/**`   — services, PDFs, notifications, route handlers
+ *   - `src/server/**`   — services, PDFs, notifications
  *   - `prisma/**`       — the seed
+ *   - the write paths under `src/app/**` — every `actions.ts` (a `'use server'`
+ *     file; the sell flow's is what calls `createSale`) and every `route.ts`.
+ *     In this app the route handlers and the server actions live under `src/app`
+ *     beside the screens, not under `src/server`, so listing `src/server` alone
+ *     would leave every money write in the codebase uncovered. The rest of
+ *     `src/app` — pages and layouts — is presentation and may read this module.
  *
  * `src/components/__tests__/indicative-usd.test.ts` enforces exactly that by
  * walking those trees, in the same shape as `domain-purity.test.ts`. It lives
