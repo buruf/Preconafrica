@@ -1,8 +1,15 @@
 import { PrismaClient, type PaymentMethod, type PlanType } from '@prisma/client'
 import bcrypt from 'bcryptjs'
-import { toMinor } from '../src/domain/currency'
+import { formatMinor, toMinor } from '../src/domain/currency'
 import { allocatePayment } from '../src/domain/allocation'
-import { generateSchedule } from '../src/domain/schedule'
+import {
+  NO_INSTALLMENT_FEE,
+  computeInstallmentFeeMinor,
+  generateSchedule,
+  installmentFeeSummary,
+  isFreeInstallmentFee,
+  type InstallmentFeeMode
+} from '../src/domain/schedule'
 import { generateUnitNames } from '../src/domain/units'
 import { applyAllocations } from '../src/server/services/allocations'
 import { formatDocumentNumber, nextDocumentSequence } from '../src/server/documents/numbering'
@@ -10,6 +17,37 @@ import { assertSeedTargetIsSafe } from './seed-guard'
 
 const prisma = new PrismaClient()
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
+
+/**
+ * The project's charge in the shape the domain wants it.
+ *
+ * Duplicated from `services/sales.ts` rather than imported, for the same reason
+ * the receipt below is written from the numbering primitives instead of
+ * `documents/issue.ts`: sales.ts pulls `@/server/session` and therefore the
+ * whole auth stack, which a bare tsx process cannot boot. It is three field
+ * reads, and the schedule invariant printed at the end of this file would catch
+ * any drift between the two immediately.
+ */
+function projectFeeConfig(project: {
+  installmentFeeMode: InstallmentFeeMode
+  installmentMarkupBps: number
+  installmentFixedFeeMinor: bigint
+}) {
+  return {
+    mode: project.installmentFeeMode,
+    bps: project.installmentMarkupBps,
+    fixedMinor: project.installmentFixedFeeMinor
+  }
+}
+
+/** The charge a signed sale carries, out of its own snapshot. See above. */
+function saleFeeConfig(sale: {
+  feeMode: InstallmentFeeMode
+  markupBps: number
+  fixedFeeMinor: bigint
+}) {
+  return { mode: sale.feeMode, bps: sale.markupBps, fixedMinor: sale.fixedFeeMinor }
+}
 
 async function main() {
   // Before the client connects, let alone deletes anything: this throws unless
@@ -68,11 +106,18 @@ async function main() {
       unitsPerFloor: 6,
       startFloor: 1,
       namingPattern: '{floor}{index:02}',
-      // Deliberately zero, and deliberately explicit rather than left to the
-      // column default: one seeded project charges nothing for paying over time
-      // and one charges 10%, so every schedule, dashboard line and PDF is
-      // exercised in both configurations rather than only the interesting one.
+      // The FIXED demonstration, explicit rather than left to the column
+      // default. ₦2,500,000 flat: the same charge whether a buyer finances 60
+      // million or 6, which is the whole point of the mode — a percentage of
+      // the financed amount is interest, and interest is not permissible in
+      // every market this platform serves.
+      //
+      // One project on FIXED and one on PERCENT means every schedule, dashboard
+      // line, confirm page and PDF is exercised in both configurations from the
+      // first page load, rather than only in the familiar one.
+      installmentFeeMode: 'FIXED',
       installmentMarkupBps: 0,
+      installmentFixedFeeMinor: toMinor('2500000', 'NGN'),
       reminderDaysBefore: 7,
       overdueNoticeDaysAfter: 3
     }
@@ -89,11 +134,13 @@ async function main() {
       unitsPerFloor: 6,
       startFloor: 1,
       namingPattern: '{floor}{letter}',
-      // 10% on whatever a buyer finances. The live demonstration of the fee:
-      // both Nairobi installment plans below carry it, so the "includes an
-      // installment charge" line on the dashboards and the charge line on the
-      // statement have real figures behind them from the first page load.
+      // The PERCENT demonstration, unchanged: 10% on whatever a buyer finances.
+      // Both Nairobi installment plans below carry it, so the "includes an
+      // installment charge (10%)" line on the dashboards and the rate quoted on
+      // the statement have real figures behind them from the first page load.
+      installmentFeeMode: 'PERCENT',
       installmentMarkupBps: 1000,
+      installmentFixedFeeMinor: 0n,
       reminderDaysBefore: 10,
       overdueNoticeDaysAfter: 5
     }
@@ -165,7 +212,13 @@ async function main() {
      * in NGN at 0%, and the mismatch would only surface as figures that quietly
      * fail to add up.
      */
-    project: { id: string; currency: string; installmentMarkupBps: number }
+    project: {
+      id: string
+      currency: string
+      installmentFeeMode: InstallmentFeeMode
+      installmentMarkupBps: number
+      installmentFixedFeeMinor: bigint
+    }
     buyerId: string
     buyerName: string
     unitName: string
@@ -181,19 +234,22 @@ async function main() {
     })
 
     const depositMinor = toMinor(opts.depositMajor, currency)
-    // The project's default rate, snapshotted onto the sale — the same figure
-    // `createSale` resolves for a staff-created sale with no override, which is
-    // what every seeded sale is. Zero for a FULL plan whatever the project
-    // charges: nothing is financed, so there is nothing to charge for, and
-    // `generateSchedule` rejects a marked-up full payment outright. This mirrors
-    // `resolveMarkupBps` rather than calling it, because that function needs a
-    // SessionActor and the seed has no session.
-    const markupBps = opts.planType === 'INSTALLMENTS' ? opts.project.installmentMarkupBps : 0
+    // The project's default charge — mode and value — snapshotted onto the
+    // sale, exactly what `createSale` resolves for a staff-created sale with no
+    // override, which is what every seeded sale is. No charge at all for a FULL
+    // plan whatever the project asks: nothing is financed, so there is nothing
+    // to charge for, and `generateSchedule` rejects a charged full payment
+    // outright. This mirrors `resolveInstallmentFee` rather than calling it,
+    // because that function needs a SessionActor and the seed has no session.
+    const fee =
+      opts.planType === 'INSTALLMENTS'
+        ? projectFeeConfig(opts.project)
+        : NO_INSTALLMENT_FEE
     const drafts = generateSchedule({
       planType: opts.planType,
       priceMinor: unit.priceMinor,
       depositMinor,
-      markupBps,
+      fee,
       months: opts.termMonths ?? 0,
       signedAt: opts.signedAt
     })
@@ -207,7 +263,9 @@ async function main() {
         planType: opts.planType,
         priceMinor: unit.priceMinor,
         depositMinor,
-        markupBps,
+        feeMode: fee.mode,
+        markupBps: fee.bps,
+        fixedFeeMinor: fee.fixedMinor,
         currency: currency,
         termMonths: opts.termMonths,
         signedAt: opts.signedAt,
@@ -359,20 +417,25 @@ async function main() {
     ]
   })
 
-  // 3. Partial payment outstanding on the current installment.
-  // Unit '303' (1 bedroom, 85,000,000 NGN) on Sunrise Heights, which charges
-  // nothing: a 25,000,000 deposit finances 60,000,000 over 36 months at 0%, so
-  // the monthly installment is 1,666,666.66 (final 1,666,666.90) and total owed
-  // is exactly the 85,000,000 price. The deposit payment settles entry 0, the
-  // second payment settles installment 1 exactly, and the 800,000 lands partway
-  // into installment 2 (due 2026-07-20, now past) — one overdue entry, and the
-  // only fixture where the markup line reads zero.
+  // 3. Partial payment outstanding on the current installment — and the FIXED
+  // fixture. Unit '303' (1 bedroom, 85,000,000 NGN) on Sunrise Heights, which
+  // charges a flat 2,500,000: a 25,000,000 deposit finances 60,000,000, the
+  // charge is 2,500,000 whatever that figure had been, and the installments
+  // amortize 62,500,000 over 36 months -> 1,736,111.11 a month (x35, final
+  // 1,736,111.15). Total owed is 87,500,000 = price 85,000,000 + fee 2,500,000.
+  //
+  // The deposit payment settles entry 0, the second settles installment 1
+  // exactly, and the 800,000 lands partway into installment 2 (due 2026-07-20,
+  // now past) — one overdue entry. Note the second payment tracks the monthly
+  // figure: it was 1,666,666.66 while this project charged nothing, and leaving
+  // it there would have left installment 1 short by the fee's share and quietly
+  // changed what this fixture demonstrates.
   await createSale({
     project: lagos, buyerId: zainab.id, buyerName: zainab.fullName, unitName: '303',
     planType: 'INSTALLMENTS', depositMajor: '25000000', termMonths: 36, signedAt: utc(2026, 5, 20),
     payments: [
       { amountMajor: '25000000', receivedAt: utc(2026, 5, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/05/7742' },
-      { amountMajor: '1666666.66', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
+      { amountMajor: '1736111.11', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
       { amountMajor: '800000', receivedAt: utc(2026, 7, 22), method: 'BANK_TRANSFER', reference: 'ZEN/2026/07/9002' }
     ]
   })
@@ -401,9 +464,55 @@ async function main() {
     ]
   })
 
-  console.log('Seeded:', {
+  // Per sale, the invariant every other money figure in the platform rests on:
+  // the schedule sums to exactly the price plus the charge, in either fee mode.
+  // Printed rather than merely asserted so a reseed is its own evidence.
+  const seededSales = await prisma.sale.findMany({
+    include: {
+      unit: { select: { name: true } },
+      buyer: { select: { fullName: true } },
+      project: { select: { name: true } },
+      scheduleEntries: { select: { amountDueMinor: true } }
+    },
+    orderBy: { signedAt: 'asc' }
+  })
+
+  console.log('\nFee mode / schedule invariant, per sale:')
+  for (const sale of seededSales) {
+    const fee = saleFeeConfig(sale)
+    const feeMinor = isFreeInstallmentFee(fee)
+      ? 0n
+      : computeInstallmentFeeMinor(sale.priceMinor - sale.depositMinor, fee)
+    const summed = sale.scheduleEntries.reduce((total, e) => total + e.amountDueMinor, 0n)
+    const pricePlusFee = sale.priceMinor + feeMinor
+
+    console.log(
+      [
+        `  ${sale.buyer.fullName.padEnd(14)}`,
+        `${sale.project.name.padEnd(16)}`,
+        `unit ${sale.unit.name.padEnd(4)}`,
+        `${sale.planType.padEnd(12)}`,
+        `mode=${sale.feeMode.padEnd(7)}`,
+        `charge=${installmentFeeSummary(fee, sale.currency).padEnd(14)}`,
+        `fee=${formatMinor(feeMinor, sale.currency).padEnd(16)}`,
+        `Sum(entries)=${formatMinor(summed, sale.currency).padEnd(18)}`,
+        `price+fee=${formatMinor(pricePlusFee, sale.currency).padEnd(18)}`,
+        summed === pricePlusFee ? 'EQUAL' : `MISMATCH by ${summed - pricePlusFee}`
+      ].join(' ')
+    )
+
+    // Loud rather than cosmetic: a seed whose schedule does not sum to the
+    // price plus the charge is a broken demo of a broken invariant.
+    if (summed !== pricePlusFee) {
+      throw new Error(
+        `Schedule invariant violated for ${sale.buyer.fullName}: entries sum to ${summed}, price+fee is ${pricePlusFee}`
+      )
+    }
+  }
+
+  console.log('\nSeeded:', {
     org: org.name,
-    projects: `2 (Sunrise Heights 0%, Riverside Court 10%)`,
+    projects: `2 (Sunrise Heights fixed ₦2,500,000, Riverside Court 10%)`,
     units: await prisma.unit.count(),
     sales: await prisma.sale.count(),
     scheduleEntries: await prisma.scheduleEntry.count(),

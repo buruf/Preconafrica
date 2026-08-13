@@ -4,7 +4,7 @@ import { requireStaff } from '@/server/session'
 import { prisma } from '@/server/db'
 import { DEFAULT_TERM_MONTHS, listBuyers } from '@/server/services/sales'
 import { bpsToPercentString } from '@/domain/schedule'
-import { formatMinor } from '@/domain/currency'
+import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { UnitImagery } from '@/components/media'
 import { SellForm } from './SellForm'
@@ -30,7 +30,16 @@ export default async function SellUnitPage({
   const unit = await prisma.unit.findFirst({
     where: { id: params.unitId, projectId: params.id, project: { orgId: actor.orgId } },
     include: {
-      project: { select: { id: true, name: true, currency: true, installmentMarkupBps: true } }
+      project: {
+        select: {
+          id: true,
+          name: true,
+          currency: true,
+          installmentFeeMode: true,
+          installmentMarkupBps: true,
+          installmentFixedFeeMinor: true
+        }
+      }
     }
   })
   if (!unit) notFound()
@@ -88,7 +97,18 @@ export default async function SellUnitPage({
         unitId={unit.id}
         buyers={buyers}
         defaultTermMonths={DEFAULT_TERM_MONTHS}
+        currency={unit.project.currency}
+        // Both prefills cross as strings, never as a bigint — nothing of that
+        // type may reach a client component. `toMajorString` round-trips
+        // exactly back through `toMinor`, so an agent who opens the form and
+        // submits it unchanged re-signs the project's own figure to the minor
+        // unit rather than a rounded version of it.
+        defaultFeeMode={unit.project.installmentFeeMode}
         defaultMarkupPercent={bpsToPercentString(unit.project.installmentMarkupBps)}
+        defaultFixedFee={toMajorString(
+          unit.project.installmentFixedFeeMinor,
+          unit.project.currency
+        )}
       />
 
       <p className="mt-3 text-center text-sm">

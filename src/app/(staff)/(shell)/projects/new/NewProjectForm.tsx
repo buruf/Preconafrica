@@ -92,12 +92,39 @@ export function NewProjectForm() {
             <Field label="Price" name="defaultPrice" required placeholder="145000000" />
           </div>
 
+          {/* Two modes, not one with a workaround. A percentage of the financed
+              amount is interest, and interest is not permissible in several of
+              the markets this platform is sold into — a developer there charges
+              one flat fee for the service of spreading the payments. See
+              `InstallmentFeeMode` in schema.prisma. */}
+          <Field
+            label="How installments are charged"
+            name="installmentFeeMode"
+            hint="A percentage of the financed amount, or one flat amount whatever the unit costs. Choose a fixed amount where charging interest is not permissible."
+          >
+            <select
+              name="installmentFeeMode"
+              className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base"
+            >
+              <option value="PERCENT">A percentage of the financed amount</option>
+              <option value="FIXED">A fixed amount</option>
+            </select>
+          </Field>
+
           <Field
             label="Installment charge (%)"
             name="installmentMarkupPercent"
             defaultValue="0"
             placeholder="10"
-            hint="Charged on the financed amount (price less deposit) for buyers paying by installments. Up to two decimal places. Staff can override it on an individual sale."
+            hint="Used when the charge is a percentage. Charged on the financed amount (price less deposit). Up to two decimal places. Staff can override it on an individual sale."
+          />
+
+          <Field
+            label="Fixed installment charge"
+            name="installmentFixedFee"
+            defaultValue="0"
+            placeholder="2500000"
+            hint="Used when the charge is a fixed amount. In the project's own currency, and it must be less than the amount a buyer finances. Staff can override it on an individual sale."
           />
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

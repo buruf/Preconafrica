@@ -1,8 +1,13 @@
 import Link from 'next/link'
 import { requireBuyer } from '@/server/session'
-import { getSaleForBuyer, summariseSale } from '@/server/services/sales'
+import { getSaleForBuyer, saleFeeConfig, summariseSale } from '@/server/services/sales'
 import { deriveStatus } from '@/domain/status'
-import { bpsToPercentString, computeMarkupMinor, scheduleEntryLabel } from '@/domain/schedule'
+import {
+  computeInstallmentFeeMinor,
+  installmentFeeRateSuffix,
+  isFreeInstallmentFee,
+  scheduleEntryLabel
+} from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { MediaImage, UnitImagery } from '@/components/media'
@@ -34,11 +39,11 @@ export default async function BuyerDashboard() {
   // The buyer's own copy of the fee they agreed to. Recomputed from the sale's
   // signing snapshot rather than inferred by subtracting the price from the
   // schedule total, so the figure here, on the staff page and on the statement
-  // all come from the same arithmetic on the same three stored numbers.
-  const markupMinor =
-    sale.markupBps > 0
-      ? computeMarkupMinor(sale.priceMinor - sale.depositMinor, sale.markupBps)
-      : 0n
+  // all come from the same arithmetic on the same stored numbers.
+  const saleFee = saleFeeConfig(sale)
+  const feeMinor = isFreeInstallmentFee(saleFee)
+    ? 0n
+    : computeInstallmentFeeMinor(sale.priceMinor - sale.depositMinor, saleFee)
 
   // `documents` is the sale's flat list, not a per-entry relation, so build the
   // lookup once instead of scanning it for every schedule row — same approach
@@ -71,10 +76,12 @@ export default async function BuyerDashboard() {
         <Card className="col-span-2">
           <p className="text-xs text-slate-500">Total owed</p>
           <p className="text-lg font-semibold">{money(summary.totalOwedMinor)}</p>
-          {markupMinor > 0n ? (
+          {feeMinor > 0n ? (
+            // Empty suffix for a flat fee — see the staff twin. A buyer whose
+            // developer charges a fixed amount must not be shown a rate.
             <p className="mt-1 text-xs text-slate-500">
-              includes {money(markupMinor)} installment charge (
-              {bpsToPercentString(sale.markupBps)}% of the financed amount)
+              includes {money(feeMinor)} installment charge
+              {installmentFeeRateSuffix(saleFee)}
             </p>
           ) : null}
         </Card>

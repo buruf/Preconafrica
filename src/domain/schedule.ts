@@ -1,8 +1,45 @@
+import { formatMinor } from '@/domain/currency'
 import { addMonthsClamped, startOfUtcDay } from '@/domain/dates'
 
 export const DEFAULT_TERM_MONTHS = 36
 
 export type PlanType = 'FULL' | 'INSTALLMENTS'
+
+/**
+ * Whether the installment charge is a percentage of what is financed or a flat
+ * sum of money. Why both exist — and why FIXED must not be "simplified" into a
+ * percentage worked out per sale — is written out in full on
+ * `enum InstallmentFeeMode` in prisma/schema.prisma. In short: a percentage of
+ * the financed amount is interest, because it grows with the sum borrowed and
+ * with nothing else, and interest is not permissible in several of the markets
+ * this platform serves. A developer there must be able to charge one flat fee
+ * for the service of spreading the payments.
+ */
+export type InstallmentFeeMode = 'PERCENT' | 'FIXED'
+
+/**
+ * A mode plus both values, rather than a union carrying one value each.
+ *
+ * It mirrors how the two are stored — Project and Sale each hold the mode and
+ * both figures, so switching a project's mode never loses the rate it used to
+ * charge — and it means the mode is the only thing a reader has to check to
+ * know which number is live. The inactive field is its zero, and nothing reads
+ * it.
+ */
+export interface InstallmentFeeConfig {
+  mode: InstallmentFeeMode
+  /** Basis points of the financed amount. Read only when mode is PERCENT. */
+  bps: number
+  /** A flat charge in minor units. Read only when mode is FIXED. */
+  fixedMinor: bigint
+}
+
+/** The charge a plan that finances nothing carries: none, in either mode. */
+export const NO_INSTALLMENT_FEE: InstallmentFeeConfig = Object.freeze({
+  mode: 'PERCENT',
+  bps: 0,
+  fixedMinor: 0n
+})
 
 export interface ScheduleEntryDraft {
   sequence: number
@@ -15,14 +52,13 @@ export interface ScheduleInput {
   priceMinor: bigint
   depositMinor: bigint
   /**
-   * What the developer charges for letting the buyer pay over time, in basis
-   * points of the financed amount. Required rather than defaulted: every caller
-   * is in this repository, and a forgotten markup must be a compile error, not
-   * a silently free installment plan.
+   * What the developer charges for letting the buyer pay over time. Required
+   * rather than defaulted: every caller is in this repository, and a forgotten
+   * charge must be a compile error, not a silently free installment plan.
    *
-   * Ignored for FULL plans, which must pass 0 — see below.
+   * A FULL plan must pass a zero charge, in whichever mode — see below.
    */
-  markupBps: number
+  fee: InstallmentFeeConfig
   /** Ignored for FULL plans. */
   months: number
   signedAt: Date
@@ -126,24 +162,117 @@ export function bpsToPercentString(bps: number): string {
 }
 
 /**
- * The installment charge, in minor units, on a financed amount.
+ * The installment charge, in minor units, on a financed amount — in whichever
+ * mode the developer charges.
  *
- * Basis points rather than a percentage float: 10% is the integer 1000, so the
- * whole calculation stays in BigInt and no rounding error can enter through a
- * binary fraction that cannot represent 0.1. The division floors (BigInt
- * truncates, and both operands are non-negative), so the charge always rounds
- * in the buyer's favour by at most one minor unit.
+ * PERCENT is the original arithmetic unchanged: basis points rather than a
+ * percentage float, so 10% is the integer 1000, the whole calculation stays in
+ * BigInt, and no rounding error can enter through a binary fraction that cannot
+ * represent 0.1. The division floors (BigInt truncates, and both operands are
+ * non-negative), so the charge rounds in the buyer's favour by at most one
+ * minor unit.
+ *
+ * FIXED returns the flat amount, whatever is being financed. There is no
+ * arithmetic to do and deliberately none invented: the moment the returned
+ * figure depended on `financedMinor` it would be interest again, which is the
+ * one thing this mode exists to avoid.
  *
  * Exported so callers can quote the charge without re-deriving it from the
- * schedule — the preview shows it as its own line, and re-implementing
- * `financed * bps / 10000` at each call site is how two figures drift apart.
+ * schedule — the preview, the two dashboards and the statement all show it as
+ * its own line, and re-implementing it at each call site is how figures drift.
  */
-export function computeMarkupMinor(financedMinor: bigint, markupBps: number): bigint {
-  assertMarkupBps(markupBps)
+export function computeInstallmentFeeMinor(
+  financedMinor: bigint,
+  fee: InstallmentFeeConfig
+): bigint {
   if (financedMinor < 0n) {
     throw new ScheduleError('financedMinor cannot be negative')
   }
-  return (financedMinor * BigInt(markupBps)) / BPS_DIVISOR
+  assertFeeAgainstFinanced(financedMinor, fee)
+
+  // No arithmetic in FIXED mode, by design — see above.
+  if (fee.mode === 'FIXED') return fee.fixedMinor
+
+  return (financedMinor * BigInt(fee.bps)) / BPS_DIVISOR
+}
+
+/**
+ * The shape checks that need no financed amount: which mode, and is the live
+ * value of that mode even representable. Run early by `generateSchedule` so a
+ * malformed config is refused before anything is computed from it, and reused
+ * by the service layer, which validates an override before it has a unit price.
+ */
+export function assertInstallmentFee(fee: InstallmentFeeConfig): void {
+  if (fee.mode === 'PERCENT') {
+    assertMarkupBps(fee.bps)
+    return
+  }
+  if (fee.mode !== 'FIXED') {
+    throw new ScheduleError(`Unknown installment fee mode: ${String(fee.mode)}`)
+  }
+  if (typeof fee.fixedMinor !== 'bigint') {
+    throw new ScheduleError('A fixed installment charge must be an exact amount in minor units')
+  }
+  if (fee.fixedMinor < 0n) {
+    throw new ScheduleError('A fixed installment charge cannot be negative')
+  }
+}
+
+/**
+ * The shape checks plus the one that needs the financed amount: a flat fee has
+ * to be strictly smaller than the thing being financed.
+ *
+ * Strictly, not "at most": a fee equal to the financed amount doubles what the
+ * buyer owes for the privilege of paying in installments, and one larger than
+ * it means the fee is the purchase. Neither is a business model — both are a
+ * misplaced decimal point — so this is the FIXED counterpart of the 0..10000
+ * bound PERCENT gets, and it catches the same class of typo. PERCENT needs no
+ * such check: 100% of the financed amount is its ceiling by construction.
+ */
+function assertFeeAgainstFinanced(financedMinor: bigint, fee: InstallmentFeeConfig): void {
+  assertInstallmentFee(fee)
+  if (fee.mode === 'FIXED' && fee.fixedMinor >= financedMinor) {
+    throw new ScheduleError(
+      'A fixed installment charge must be less than the amount being financed'
+    )
+  }
+}
+
+/** Whether this config actually charges anything. Zero in either mode is free. */
+export function isFreeInstallmentFee(fee: InstallmentFeeConfig): boolean {
+  return fee.mode === 'PERCENT' ? fee.bps === 0 : fee.fixedMinor === 0n
+}
+
+/**
+ * The rate quoted beside the charge wherever it is shown: ' (10%)' for a
+ * percentage, and — this is the point — the empty string for a flat fee.
+ *
+ * A FIXED charge has no rate. Deriving one for display ("₦2,500,000, which is
+ * 4.2% of what you financed") would put the interest framing back on the page
+ * for a developer who chose this mode precisely so it would not be there, and
+ * it would print a different percentage on every unit for what is one fee. One
+ * function rather than a ternary at each of the four display sites, so a fifth
+ * site cannot quietly get it wrong.
+ */
+export function installmentFeeRateSuffix(fee: InstallmentFeeConfig): string {
+  return fee.mode === 'PERCENT' ? ` (${bpsToPercentString(fee.bps)}%)` : ''
+}
+
+/** 'Installment charge (10%)' or plain 'Installment charge'. */
+export function installmentFeeLabel(fee: InstallmentFeeConfig): string {
+  return `Installment charge${installmentFeeRateSuffix(fee)}`
+}
+
+/**
+ * The charge on its own, as a developer reads their project's default: '10%'
+ * for a percentage, the formatted money for a flat fee. Needs the currency,
+ * which is why it takes one — a fixed fee is meaningless without it.
+ */
+export function installmentFeeSummary(fee: InstallmentFeeConfig, currency: string): string {
+  assertInstallmentFee(fee)
+  return fee.mode === 'PERCENT'
+    ? `${bpsToPercentString(fee.bps)}%`
+    : formatMinor(fee.fixedMinor, currency)
 }
 
 function assertMarkupBps(markupBps: number): void {
@@ -158,7 +287,7 @@ function assertMarkupBps(markupBps: number): void {
 }
 
 export function generateSchedule(input: ScheduleInput): ScheduleEntryDraft[] {
-  const { planType, priceMinor, depositMinor, markupBps, months, signedAt } = input
+  const { planType, priceMinor, depositMinor, fee, months, signedAt } = input
 
   if (Number.isNaN(signedAt.getTime())) {
     throw new ScheduleError('signedAt is not a valid date')
@@ -169,7 +298,10 @@ export function generateSchedule(input: ScheduleInput): ScheduleEntryDraft[] {
   if (depositMinor < 0n) {
     throw new ScheduleError('depositMinor cannot be negative')
   }
-  assertMarkupBps(markupBps)
+  // Shape only, here: whether a FIXED fee fits inside the financed amount
+  // cannot be known until the deposit has been subtracted, so that check lives
+  // in `computeInstallmentFeeMinor` below, on the branch that has the figure.
+  assertInstallmentFee(fee)
 
   const signedDay = startOfUtcDay(signedAt)
 
@@ -180,12 +312,12 @@ export function generateSchedule(input: ScheduleInput): ScheduleEntryDraft[] {
     if (depositMinor !== 0n) {
       throw new ScheduleError('a full-payment sale cannot carry a deposit')
     }
-    // Nothing is financed, so there is nothing to charge for. A non-zero markup
-    // here is a caller mistake — most likely a project default that leaked onto
-    // a plan it does not apply to — and silently ignoring it would overcharge or
-    // undercharge depending on which figure the UI happened to quote.
-    if (markupBps !== 0) {
-      throw new ScheduleError('a full-payment sale cannot carry an installment markup')
+    // Nothing is financed, so there is nothing to charge for — in either mode.
+    // A non-zero charge here is a caller mistake, most likely a project default
+    // that leaked onto a plan it does not apply to, and silently ignoring it
+    // would overcharge or undercharge depending on which figure the UI quoted.
+    if (!isFreeInstallmentFee(fee)) {
+      throw new ScheduleError('a full-payment sale cannot carry an installment charge')
     }
     return [{ sequence: 1, dueDate: signedDay, amountDueMinor: priceMinor }]
   }
@@ -200,12 +332,13 @@ export function generateSchedule(input: ScheduleInput): ScheduleEntryDraft[] {
   const financedMinor = priceMinor - depositMinor
   const termMonths = BigInt(months)
 
-  // The markup is charged on what is actually financed — the price less the
-  // deposit — so paying a larger deposit genuinely costs the buyer less, and a
-  // buyer who pays everything up front pays no charge at all. The installments
-  // amortize the marked-up total; the deposit entry is never marked up.
-  const markupMinor = computeMarkupMinor(financedMinor, markupBps)
-  const chargedMinor = financedMinor + markupMinor
+  // A PERCENT charge is levied on what is actually financed — the price less
+  // the deposit — so paying a larger deposit genuinely costs the buyer less. A
+  // FIXED charge is the flat fee, unaffected by the deposit, which is the whole
+  // point of it. Either way the installments amortize the financed amount plus
+  // the charge, and the deposit entry itself is never charged.
+  const feeMinor = computeInstallmentFeeMinor(financedMinor, fee)
+  const chargedMinor = financedMinor + feeMinor
 
   // BigInt division truncates toward zero, which is floor for positive values —
   // exactly the "round down to the smallest minor unit" rule, with no exponent
@@ -224,7 +357,7 @@ export function generateSchedule(input: ScheduleInput): ScheduleEntryDraft[] {
 
   // The deposit is receivable, not received. It leads the schedule as its own
   // entry, due on the signing day, so the whole contract is in one place and
-  // the schedule sums to exactly `priceMinor + markupMinor` — every naira the
+  // the schedule sums to exactly `priceMinor + feeMinor` — every naira the
   // buyer owes, and nothing that is not one of these entries. A buyer who
   // agreed a deposit and never paid it is in arrears the next day, and the only
   // way it counts toward paid-to-date is a Payment allocated against it.

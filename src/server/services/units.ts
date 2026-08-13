@@ -5,6 +5,7 @@ import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { ImageUrlField, RenderUrlsField } from '@/server/services/media'
 import { toMinor } from '@/domain/currency'
+import type { InstallmentFeeMode } from '@/domain/schedule'
 
 /**
  * Shared with projects.ts's `defaultSizeSqm` — one pattern, one message, so
@@ -54,12 +55,15 @@ export interface ProjectInventory {
     /** The building photo, for the banner at the top of the inventory page. */
     heroImageUrl: string | null
     /**
-     * The project's default installment charge. Carried so the inventory page
-     * can state the rate a "Sell" from one of these rows will default to;
-     * otherwise the only place it is ever visible is the sale form itself,
-     * which is too late for staff to notice a project is still set to 0%.
+     * The project's default installment charge — the mode and both values, so
+     * the inventory page can state what a "Sell" from one of these rows will
+     * default to. Otherwise the only place it is ever visible is the sale form
+     * itself, which is too late for staff to notice a project is still set to
+     * 0%, or still on a percentage in a market that cannot charge one.
      */
+    installmentFeeMode: InstallmentFeeMode
     installmentMarkupBps: number
+    installmentFixedFeeMinor: bigint
   }
   floors: Array<{ floor: number; units: InventoryUnit[]; available: number; total: number }>
   totals: { total: number; available: number; reserved: number; sold: number }
@@ -119,7 +123,9 @@ export async function getProjectInventory(
       expectedCompletion: project.expectedCompletion,
       namingPattern: project.namingPattern,
       heroImageUrl: project.heroImageUrl,
-      installmentMarkupBps: project.installmentMarkupBps
+      installmentFeeMode: project.installmentFeeMode,
+      installmentMarkupBps: project.installmentMarkupBps,
+      installmentFixedFeeMinor: project.installmentFixedFeeMinor
     },
     floors,
     totals: {

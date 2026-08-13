@@ -2,7 +2,8 @@ import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { getProjectInventory } from '@/server/services/units'
 import { ServiceError } from '@/server/services/errors'
-import { bpsToPercentString } from '@/domain/schedule'
+import { installmentFeeSummary } from '@/domain/schedule'
+import { projectFeeConfig } from '@/server/services/sales'
 import { formatMinor, toMajorString } from '@/domain/currency'
 import { Card, PageHeader } from '@/components/ui'
 import { MediaImage } from '@/components/media'
@@ -33,13 +34,15 @@ export default async function ProjectPage({ params }: { params: { id: string } }
     <>
       <PageHeader
         title={project.name}
-        // The installment rate belongs in the header because it is the figure
+        // The installment charge belongs in the header because it is the figure
         // every "Sell" on this page prefills. Visible only on the sale form, a
         // project still sitting at 0% is noticed after a contract is signed at
-        // 0%, not before.
-        subtitle={`${project.location} · Installment charge ${bpsToPercentString(
-          project.installmentMarkupBps
-        )}%`}
+        // 0%, not before. `installmentFeeSummary` prints '10%' or the money, and
+        // never a percentage for a flat fee.
+        subtitle={`${project.location} · Installment charge ${installmentFeeSummary(
+          projectFeeConfig(project),
+          project.currency
+        )}`}
       />
 
       {/* The building, before the numbers. A developer's inventory page is the

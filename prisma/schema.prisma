@@ -49,6 +49,28 @@ enum ReminderChannel {
   SMS
 }
 
+/// How a developer charges for letting a buyer pay over time: as a percentage
+/// of the financed amount, or as one flat sum of money.
+///
+/// FIXED is not a convenience variant of PERCENT and must not be "simplified"
+/// away. A percentage of the financed amount *is* interest — the charge grows
+/// with the sum borrowed and with nothing else — and interest is not
+/// permissible in several of the markets this platform serves. A developer
+/// there has to be able to name one flat fee for the service of spreading the
+/// payments: the same fee whether the unit costs 20 million or 200. Collapsing
+/// FIXED into "PERCENT with the rate worked out per sale" does not preserve
+/// that, because the charge would once again be a function of the amount
+/// financed, which is exactly the thing that is not allowed.
+///
+/// Two rules elsewhere follow from this and are load-bearing: no percentage may
+/// ever be printed beside a FIXED charge (see `installmentFeeRateSuffix` in
+/// domain/schedule.ts), and a FIXED fee is bounded by the financed amount
+/// rather than by a 0–10000 range (see `computeInstallmentFeeMinor`).
+enum InstallmentFeeMode {
+  PERCENT
+  FIXED
+}
+
 enum DocumentType {
   INVOICE
   RECEIPT
@@ -158,12 +180,21 @@ model Project {
   /// is checked by `checkImageUrl` at input time and re-checked by the
   /// server-side SSRF guard before any PDF embeds it.
   heroImageUrl           String?
-  /// The developer's default charge for paying by installments, in basis points
-  /// of the financed amount (price less deposit). 1000 = 10%. Basis points
-  /// rather than a decimal percentage so the charge is an exact integer and the
-  /// whole calculation can stay in BigInt. Int, not BigInt: this is a count of
-  /// hundredths of a percent, capped at 10000, never an amount of money.
+  /// Which of the two fields below is the project's default charge. PERCENT
+  /// reads `installmentMarkupBps`; FIXED reads `installmentFixedFeeMinor`. The
+  /// unused one is kept at zero rather than nulled, so switching a project's
+  /// mode never loses the rate it used to charge. See `InstallmentFeeMode`.
+  installmentFeeMode     InstallmentFeeMode @default(PERCENT)
+  /// The PERCENT default, in basis points of the financed amount (price less
+  /// deposit). 1000 = 10%. Basis points rather than a decimal percentage so the
+  /// charge is an exact integer and the whole calculation can stay in BigInt.
+  /// Int, not BigInt: this is a count of hundredths of a percent, capped at
+  /// 10000, never an amount of money.
   installmentMarkupBps   Int               @default(0)
+  /// The FIXED default: a flat charge in minor units of the project's currency,
+  /// the same whatever the unit costs. BigInt for the reason every other money
+  /// column is one — a NGN fee overflows Int32 as readily as a NGN price does.
+  installmentFixedFeeMinor BigInt          @default(0)
   reminderDaysBefore     Int               @default(7)
   overdueNoticeDaysAfter Int               @default(3)
   reminderChannels       ReminderChannel[] @default([EMAIL])
@@ -235,10 +266,19 @@ model Sale {
   /// Snapshot at signing. Repricing the unit must not alter a signed contract.
   priceMinor      BigInt
   depositMinor    BigInt     @default(0)
-  /// Snapshot at signing, for exactly the reason priceMinor is one: changing the
-  /// project's default markup must not silently reprice a contract someone has
-  /// already signed. Basis points of the financed amount; 0 for FULL plans.
+  /// All three snapshotted at signing, for exactly the reason priceMinor and
+  /// currency are: re-rating the project — or switching it from a percentage to
+  /// a flat fee, or the reverse — must not silently restate a contract someone
+  /// has already signed. The mode decides which of the two values is the charge;
+  /// both are zero for a FULL plan, which finances nothing.
+  ///
+  /// Every sale signed before FIXED existed carries PERCENT and its original
+  /// bps, so nothing already agreed changes value.
+  feeMode         InstallmentFeeMode @default(PERCENT)
+  /// Basis points of the financed amount, read when feeMode is PERCENT.
   markupBps       Int        @default(0)
+  /// A flat charge in minor units, read when feeMode is FIXED.
+  fixedFeeMinor   BigInt     @default(0)
   currency        String
   termMonths      Int?
   signedAt        DateTime

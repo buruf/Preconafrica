@@ -5,30 +5,46 @@ import { requireStaff } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import {
   BuyerRegistrationSchema,
-  MarkupOverrideSchema,
+  FeeOverrideSchema,
   PlanSelectionSchema,
   createSale,
   registerBuyer
 } from '@/server/services/sales'
 import { prisma } from '@/server/db'
 import { issueStatement } from '@/server/documents/issue'
-import { percentToBps } from '@/domain/schedule'
+import { percentToBps, type InstallmentFeeConfig } from '@/domain/schedule'
+import { toMinor } from '@/domain/currency'
 
 // A "use server" file may only export async functions, so the maxDuration
 // route-segment config for createStaffSaleAction's write path lives on the
 // page that invokes it (confirm/page.tsx), not here.
 
 /**
- * The percent input, as staff typed it, to an optional basis-point override.
+ * The fee half of the sell form — a mode and whichever field that mode uses —
+ * to an optional override.
  *
  * Blank means "use the project default", which is why this returns undefined
- * rather than 0 — those are different instructions, and conflating them would
- * make an agent who left the field alone silently waive the fee.
+ * rather than a zero charge: those are different instructions, and conflating
+ * them would make an agent who left the field alone silently waive the fee.
+ *
+ * The flat amount is parsed with `toMinor` against the project's own currency,
+ * never a generic number parse — "2500000" is 2,500,000.00 in NGN and
+ * 2,500,000 in RWF, and only the currency knows which. Throws on a bad value;
+ * the caller turns that into a message on the form.
  */
-function parseMarkupPercent(raw: FormDataEntryValue | null): number | undefined {
-  const value = String(raw ?? '').trim()
-  if (value === '') return undefined
-  return percentToBps(value)
+function parseFeeOverride(
+  formData: FormData,
+  currency: string
+): InstallmentFeeConfig | undefined {
+  if (String(formData.get('feeMode') ?? 'PERCENT') === 'FIXED') {
+    const raw = String(formData.get('fixedFee') ?? '').trim()
+    if (raw === '') return undefined
+    return { mode: 'FIXED', bps: 0, fixedMinor: toMinor(raw, currency) }
+  }
+
+  const raw = String(formData.get('markupPercent') ?? '').trim()
+  if (raw === '') return undefined
+  return { mode: 'PERCENT', bps: percentToBps(raw), fixedMinor: 0n }
 }
 
 /**
@@ -61,9 +77,18 @@ export async function previewSaleAction(
     return plan.error.issues[0]?.message ?? 'Please check the payment plan.'
   }
 
-  let markupBps: number | undefined
+  // The currency comes from the project, scoped to the actor's org — a flat fee
+  // cannot be parsed without knowing how many minor units its currency has, and
+  // that answer must never come from the browser.
+  const project = await prisma.project.findFirst({
+    where: { id: projectId, orgId: actor.orgId },
+    select: { currency: true }
+  })
+  if (!project) return 'That project could not be found.'
+
+  let fee: InstallmentFeeConfig | undefined
   try {
-    markupBps = parseMarkupPercent(formData.get('markupPercent'))
+    fee = parseFeeOverride(formData, project.currency)
   } catch (error) {
     return error instanceof Error ? error.message : 'Invalid installment charge.'
   }
@@ -107,8 +132,14 @@ export async function previewSaleAction(
   })
   // Only when the agent actually overrode it. An absent param is what tells the
   // confirm page to quote the project default, and it must stay absent rather
-  // than become a 0 that reads as "this sale is free of charge".
-  if (markupBps !== undefined) query.set('markupBps', String(markupBps))
+  // than become a 0 that reads as "this sale is free of charge". The amount
+  // travels as minor units, already parsed against the project's currency, so
+  // no decimal is re-interpreted on the far side.
+  if (fee !== undefined) {
+    query.set('feeMode', fee.mode)
+    if (fee.mode === 'FIXED') query.set('fixedFeeMinor', fee.fixedMinor.toString())
+    else query.set('markupBps', String(fee.bps))
+  }
 
   redirect(`/projects/${projectId}/sell/${unitId}/confirm?${query.toString()}`)
 }
@@ -129,9 +160,16 @@ export async function createStaffSaleAction(
   // not be able to sign those terms against a different one.
   if (plan.data.unitId !== unitId) return 'This confirmation is for a different unit.'
 
-  const markup = MarkupOverrideSchema.safeParse(formData.get('markupBps'))
-  if (!markup.success) {
-    return markup.error.issues[0]?.message ?? 'Invalid installment charge.'
+  // Mode and value together, exactly as the confirm page priced them. Parsed
+  // rather than trusted: these are hidden fields, so a tampered pair must fail
+  // here rather than reach the ledger.
+  const fee = FeeOverrideSchema.safeParse({
+    feeMode: formData.get('feeMode'),
+    markupBps: formData.get('markupBps'),
+    fixedFeeMinor: formData.get('fixedFeeMinor')
+  })
+  if (!fee.success) {
+    return fee.error.issues[0]?.message ?? 'Invalid installment charge.'
   }
 
   // Taken from the form rather than the session, because staff sell on behalf
@@ -148,7 +186,7 @@ export async function createStaffSaleAction(
       planType: plan.data.planType,
       deposit: plan.data.deposit,
       termMonths: plan.data.termMonths,
-      markupBps: markup.data as number | undefined,
+      fee: fee.data,
       signedAt: new Date()
     })
     saleId = result.saleId

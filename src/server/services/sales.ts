@@ -10,9 +10,14 @@ import {
   DEFAULT_TERM_MONTHS,
   DEPOSIT_SEQUENCE,
   MAX_MARKUP_BPS,
-  computeMarkupMinor,
+  NO_INSTALLMENT_FEE,
+  ScheduleError,
+  assertInstallmentFee,
+  computeInstallmentFeeMinor,
   generateSchedule,
   totalScheduledMinor,
+  type InstallmentFeeConfig,
+  type InstallmentFeeMode,
   type PlanType,
   type ScheduleEntryDraft,
   type ScheduleInput
@@ -59,20 +64,17 @@ export const PlanSelectionSchema = z
     )
   })
   .transform((value) => (value.planType === 'FULL' ? { ...value, deposit: '0' } : value))
-// Deliberately no markup field. The installment charge is the developer's fee,
-// not a term the buyer fills in — it comes from the project default, with a
-// staff-only override at createSale. Accepting it from this form-facing schema
-// would let a buyer post markupBps=0 and waive their own fee.
+// Deliberately no fee field of any kind. The installment charge is the
+// developer's fee, not a term the buyer fills in — it comes from the project
+// default, with a staff-only override at createSale. Accepting a mode or a
+// value from this form-facing schema would let a buyer post a zero charge and
+// waive their own fee.
 
 /**
- * The staff override as it travels from the sell form, through the confirm
- * URL, to the create action: an optional whole number of basis points.
- *
- * Kept out of `PlanSelectionSchema` on purpose. That schema parses what a
- * buyer-shaped form submits; this one is only ever parsed on pages behind
- * `requireStaff()`, and `resolveMarkupBps` discards the value anyway for a
- * BUYER actor. Absent — a blank input, a missing query param — means "use the
+ * The percentage half of a staff override: an optional whole number of basis
+ * points. Absent — a blank input, a missing query param — means "use the
  * project default", which is exactly what an undefined override resolves to.
+ * Composed into `FeeOverrideSchema` below, which is what callers parse.
  */
 export const MarkupOverrideSchema = z.preprocess(
   (value) => (value === '' || value === null ? undefined : value),
@@ -84,6 +86,85 @@ export const MarkupOverrideSchema = z.preprocess(
     .optional()
 )
 
+/** Blank, absent or null all mean "not supplied", never "zero". */
+const absentAsUndefined = (value: unknown) =>
+  value === '' || value === null || value === undefined ? undefined : value
+
+/**
+ * A flat-fee override as it survives a URL and a hidden form field: digits of
+ * minor units, exactly as stored. Minor units rather than the major-unit string
+ * staff typed, because by this point the amount has already been parsed against
+ * the project's currency once — re-parsing a decimal at every hop is how a
+ * currency with no minor unit (RWF, UGX) ends up 100x out.
+ */
+const FixedFeeOverrideSchema = z.preprocess(
+  absentAsUndefined,
+  z
+    .string()
+    .regex(/^\d+$/, 'The installment charge must be a whole amount in minor units')
+    .optional()
+)
+
+/**
+ * The whole staff override — mode and value — as it travels from the sell form,
+ * through the confirm URL, to the create action. Resolves to `undefined`
+ * whenever the value for the chosen mode is absent, because a blank field means
+ * "use the project default" and that is a different instruction from "charge
+ * zero": conflating them would let an agent who left the field alone silently
+ * waive the developer's fee.
+ *
+ * A bare `markupBps` with no `feeMode` still reads as a PERCENT override, so a
+ * link minted before FIXED existed keeps quoting what it always quoted.
+ *
+ * Kept out of `PlanSelectionSchema` on purpose. That schema parses what a
+ * buyer-shaped form submits; this one is only ever parsed on pages behind
+ * `requireStaff()`, and `resolveInstallmentFee` discards the value anyway for a
+ * BUYER actor.
+ */
+export const FeeOverrideSchema = z
+  .object({
+    feeMode: z.preprocess(absentAsUndefined, z.enum(['PERCENT', 'FIXED']).optional()),
+    markupBps: MarkupOverrideSchema,
+    fixedFeeMinor: FixedFeeOverrideSchema
+  })
+  .transform((value): InstallmentFeeConfig | undefined => {
+    if (value.feeMode === 'FIXED') {
+      const fixed = value.fixedFeeMinor as string | undefined
+      return fixed === undefined
+        ? undefined
+        : { mode: 'FIXED', bps: 0, fixedMinor: BigInt(fixed) }
+    }
+
+    const bps = value.markupBps as number | undefined
+    return bps === undefined ? undefined : { mode: 'PERCENT', bps, fixedMinor: 0n }
+  })
+
+/** The project's default charge, as the domain wants it. */
+export function projectFeeConfig(project: {
+  installmentFeeMode: InstallmentFeeMode
+  installmentMarkupBps: number
+  installmentFixedFeeMinor: bigint
+}): InstallmentFeeConfig {
+  return {
+    mode: project.installmentFeeMode,
+    bps: project.installmentMarkupBps,
+    fixedMinor: project.installmentFixedFeeMinor
+  }
+}
+
+/**
+ * The charge a signed sale actually carries, out of its own snapshot. Every
+ * display site derives the fee from this rather than from the project, which is
+ * what makes re-rating a project leave signed contracts alone.
+ */
+export function saleFeeConfig(sale: {
+  feeMode: InstallmentFeeMode
+  markupBps: number
+  fixedFeeMinor: bigint
+}): InstallmentFeeConfig {
+  return { mode: sale.feeMode, bps: sale.markupBps, fixedMinor: sale.fixedFeeMinor }
+}
+
 export interface SchedulePreview {
   entries: ScheduleEntryDraft[]
   totalMinor: bigint
@@ -93,9 +174,9 @@ export interface SchedulePreview {
    * The installment charge already baked into the entries, so a UI can show it
    * as its own line ("Installment charge: X") instead of leaving the buyer to
    * wonder why the total exceeds the price. Zero for a FULL plan, and zero for
-   * an installment plan at 0 bps.
+   * a free installment plan in either mode.
    */
-  markupMinor: bigint
+  feeMinor: bigint
 }
 
 /** Pure wrapper — no database access, so the UI can preview before committing. */
@@ -115,8 +196,8 @@ export function previewSchedule(input: ScheduleInput): SchedulePreview {
     totalMinor: totalScheduledMinor(entries),
     monthlyMinor: isInstallments ? monthly[0].amountDueMinor : null,
     finalMinor: isInstallments ? monthly[monthly.length - 1].amountDueMinor : null,
-    markupMinor: isInstallments
-      ? computeMarkupMinor(input.priceMinor - input.depositMinor, input.markupBps)
+    feeMinor: isInstallments
+      ? computeInstallmentFeeMinor(input.priceMinor - input.depositMinor, input.fee)
       : 0n
   }
 }
@@ -238,41 +319,55 @@ export async function registerBuyer(orgId: string, input: BuyerRegistrationInput
 }
 
 /**
- * Settles which installment charge a new sale is signed at.
+ * Settles which installment charge a new sale is signed at — mode and value
+ * together, because a mode without its value charges the wrong thing.
  *
- * Two rules, both of which the buyer-facing flow depends on:
+ * Two rules, both of which the buyer-facing flow depends on, and both unchanged
+ * by the arrival of a second mode:
  *
  *  1. Only ADMIN and AGENT may deviate from the project default. A BUYER's
- *     `markupBps` is discarded rather than validated — this is the developer's
- *     fee, and a buyer who could post `markupBps: 0` would waive it. Discarding
- *     beats rejecting: the buy flow never sends the field, so a forged one is an
- *     attack, and the honest path must not be able to fail on it.
- *  2. A FULL plan is always 0. Nothing is financed, so there is nothing to
- *     charge for — the same normalisation `PlanSelectionSchema` applies to the
- *     deposit. Without it, every full-payment sale on a project that charges a
- *     markup would die on `generateSchedule`'s FULL-plan guard.
+ *     `fee` is discarded rather than validated — this is the developer's fee,
+ *     and a buyer who could post `{mode: 'FIXED', fixedMinor: 0n}` would waive
+ *     it just as surely as one posting 0 bps. Discarding beats rejecting: the
+ *     buy flow never sends the field, so a forged one is an attack, and the
+ *     honest path must not be able to fail on it. Note the whole config is
+ *     discarded as a unit — accepting a buyer's *mode* while defaulting the
+ *     value would let them turn a 10% charge on a 200-million unit into
+ *     whatever the project's unused fixed field happens to hold.
+ *  2. A FULL plan is always free, in either mode. Nothing is financed, so there
+ *     is nothing to charge for — the same normalisation `PlanSelectionSchema`
+ *     applies to the deposit. Without it, every full-payment sale on a project
+ *     that charges anything would die on `generateSchedule`'s FULL-plan guard.
+ *
+ * What it does not check is whether a FIXED fee fits inside the financed
+ * amount: that needs a unit price this function is not given. `generateSchedule`
+ * enforces it, and `createSale` turns the resulting ScheduleError into a
+ * VALIDATION so a staff typo still lands on the form.
  *
  * Exported for the tests rather than for any caller: rule 1 is a security
  * control, and a security control that is only reachable through a function
  * needing a live Unit, Buyer and transaction is a security control nobody
  * tests. `createSale` remains its only production caller.
  */
-export function resolveMarkupBps(
+export function resolveInstallmentFee(
   actor: SessionActor,
-  input: { planType: PlanType; markupBps?: number },
-  projectDefaultBps: number
-): number {
-  if (input.planType !== 'INSTALLMENTS') return 0
+  input: { planType: PlanType; fee?: InstallmentFeeConfig },
+  projectDefault: InstallmentFeeConfig
+): InstallmentFeeConfig {
+  if (input.planType !== 'INSTALLMENTS') return NO_INSTALLMENT_FEE
 
   const mayOverride = actor.role === 'ADMIN' || actor.role === 'AGENT'
-  const resolved =
-    mayOverride && input.markupBps !== undefined ? input.markupBps : projectDefaultBps
+  const resolved = mayOverride && input.fee !== undefined ? input.fee : projectDefault
 
   // Checked here rather than left to generateSchedule so a staff typo surfaces
   // as a validation message on the form instead of a raw ScheduleError.
-  if (!Number.isInteger(resolved) || resolved < 0 || resolved > MAX_MARKUP_BPS) {
+  try {
+    assertInstallmentFee(resolved)
+  } catch (error) {
     throw new ServiceError(
-      `The installment charge must be a whole number of basis points between 0 and ${MAX_MARKUP_BPS}.`,
+      error instanceof ScheduleError
+        ? error.message
+        : `The installment charge must be a whole number of basis points between 0 and ${MAX_MARKUP_BPS}.`,
       'VALIDATION'
     )
   }
@@ -289,11 +384,11 @@ export async function createSale(
     deposit: string
     termMonths: number
     /**
-     * Staff-only override of the project's default installment charge, in basis
-     * points. Omitted — or supplied by a BUYER actor — means "use the project
+     * Staff-only override of the project's default installment charge — mode
+     * and value. Omitted, or supplied by a BUYER actor, means "use the project
      * default". A buyer must never be able to set the fee they are charged.
      */
-    markupBps?: number
+    fee?: InstallmentFeeConfig
     signedAt: Date
   }
 ) {
@@ -308,7 +403,17 @@ export async function createSale(
 
   const unit = await prisma.unit.findFirst({
     where: { id: input.unitId, project: { orgId: actor.orgId } },
-    include: { project: { select: { id: true, currency: true, installmentMarkupBps: true } } }
+    include: {
+      project: {
+        select: {
+          id: true,
+          currency: true,
+          installmentFeeMode: true,
+          installmentMarkupBps: true,
+          installmentFixedFeeMinor: true
+        }
+      }
+    }
   })
   if (!unit) throw new ServiceError('Unit not found', 'NOT_FOUND')
   if (unit.status !== 'AVAILABLE') {
@@ -321,16 +426,28 @@ export async function createSale(
   if (!buyer) throw new ServiceError('Buyer not found', 'NOT_FOUND')
 
   const depositMinor = toMinor(input.deposit, unit.project.currency)
-  const markupBps = resolveMarkupBps(actor, input, unit.project.installmentMarkupBps)
+  const fee = resolveInstallmentFee(actor, input, projectFeeConfig(unit.project))
 
-  const drafts = generateSchedule({
-    planType: input.planType,
-    priceMinor: unit.priceMinor,
-    depositMinor,
-    markupBps,
-    months: input.termMonths,
-    signedAt: input.signedAt
-  })
+  let drafts: ScheduleEntryDraft[]
+  try {
+    drafts = generateSchedule({
+      planType: input.planType,
+      priceMinor: unit.priceMinor,
+      depositMinor,
+      fee,
+      months: input.termMonths,
+      signedAt: input.signedAt
+    })
+  } catch (error) {
+    // The likeliest arrival here is a flat fee larger than what the sale
+    // finances — a misplaced decimal point on the sale form, or a project
+    // default that is fine for a penthouse and absurd for a studio. It is a
+    // data-entry mistake, so it comes back as a message on the form rather than
+    // as a raw ScheduleError through the error boundary. Deposit-versus-price
+    // mistakes land here too, and were previously unhandled.
+    if (error instanceof ScheduleError) throw new ServiceError(error.message, 'VALIDATION')
+    throw error
+  }
 
   return prisma.$transaction(async (tx) => {
     // Conditional claim inside the transaction. Two agents pressing Confirm at
@@ -348,9 +465,14 @@ export async function createSale(
         // Snapshotted: repricing the unit later must not alter this contract.
         priceMinor: unit.priceMinor,
         depositMinor,
-        // Snapshotted alongside the price: re-rating the project's installment
-        // charge later must not restate what this buyer agreed to pay.
-        markupBps,
+        // All three snapshotted alongside the price: re-rating the project's
+        // installment charge — or switching it between a percentage and a flat
+        // fee — must not restate what this buyer agreed to pay. The mode is
+        // stored with both values, so the sale remains readable without the
+        // project it came from.
+        feeMode: fee.mode,
+        markupBps: fee.bps,
+        fixedFeeMinor: fee.fixedMinor,
         currency: unit.project.currency,
         termMonths: input.planType === 'INSTALLMENTS' ? input.termMonths : null,
         signedAt: input.signedAt,

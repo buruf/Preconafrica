@@ -5,8 +5,8 @@ import { InvoiceDocument } from '@/server/pdf/InvoiceDocument'
 import { ReceiptDocument } from '@/server/pdf/ReceiptDocument'
 import { StatementDocument } from '@/server/pdf/StatementDocument'
 import { deriveStatus } from '@/domain/status'
-import { computeMarkupMinor } from '@/domain/schedule'
-import { summariseSale } from '@/server/services/sales'
+import { computeInstallmentFeeMinor, isFreeInstallmentFee } from '@/domain/schedule'
+import { saleFeeConfig, summariseSale } from '@/server/services/sales'
 import { fetchGuardedImages, toPdfImage } from '@/server/media/images'
 
 /**
@@ -48,6 +48,10 @@ export async function renderDocumentPdf(
   // OVERDUE.
   const asOf = new Date()
   const summary = summariseSale(sale, asOf)
+  // The charge this contract was signed at, out of the sale's own snapshot
+  // rather than the project's current setting — re-rating a project must never
+  // restate a statement a buyer already holds.
+  const saleFee = saleFeeConfig(sale)
   const filename = `${doc.number}.pdf`
 
   // Every image this document might carry, fetched once, concurrently, *before*
@@ -179,14 +183,14 @@ export async function renderDocumentPdf(
         termMonths={sale.termMonths}
         priceMinor={sale.priceMinor}
         depositMinor={sale.depositMinor}
-        markupBps={sale.markupBps}
+        fee={saleFee}
         // Recomputed from the sale's own signing snapshot, the same way the
         // dashboards do it, rather than inferred from the schedule total —
-        // one arithmetic, three stored numbers, no figure to drift.
-        markupMinor={
-          sale.markupBps > 0
-            ? computeMarkupMinor(sale.priceMinor - sale.depositMinor, sale.markupBps)
-            : 0n
+        // one arithmetic, the stored numbers, no figure to drift.
+        feeMinor={
+          isFreeInstallmentFee(saleFee)
+            ? 0n
+            : computeInstallmentFeeMinor(sale.priceMinor - sale.depositMinor, saleFee)
         }
         signedAt={sale.signedAt}
         expectedCompletion={sale.project.expectedCompletion}

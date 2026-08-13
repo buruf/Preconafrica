@@ -47,13 +47,21 @@ export function SellForm({
   unitId,
   buyers,
   defaultTermMonths,
-  defaultMarkupPercent
+  currency,
+  defaultFeeMode,
+  defaultMarkupPercent,
+  defaultFixedFee
 }: {
   projectId: string
   unitId: string
   buyers: BuyerOption[]
   defaultTermMonths: number
+  /** Named on the flat-fee field: the amount is typed in the project's money. */
+  currency: string
+  defaultFeeMode: 'PERCENT' | 'FIXED'
   defaultMarkupPercent: string
+  /** Major units as a string — a bigint may not cross into a client component. */
+  defaultFixedFee: string
 }) {
   const action = previewSaleAction.bind(null, projectId, unitId)
   const [error, formAction] = useFormState(action, undefined)
@@ -62,6 +70,12 @@ export function SellForm({
   // they are registered and sold to in one sitting.
   const [buyerMode, setBuyerMode] = useState<'new' | 'existing'>('new')
   const [planType, setPlanType] = useState<'FULL' | 'INSTALLMENTS'>('INSTALLMENTS')
+  // Seeded from the project, not hardcoded: a developer who charges a flat fee
+  // opens this form on the flat-fee field, and the percentage input is the one
+  // hidden and disabled. Both are server-rendered from this same initial value,
+  // so the markup matches on both renders and a no-JS agent submits the
+  // project's own mode with its own field enabled.
+  const [feeMode, setFeeMode] = useState<'PERCENT' | 'FIXED'>(defaultFeeMode)
 
   // False through the server render and the first client render, so the markup
   // below is identical on both and hydration cannot mismatch. Only afterwards
@@ -232,20 +246,67 @@ export function SellForm({
           </Field>
         </div>
 
-        <div className={planType === 'INSTALLMENTS' ? 'mt-4' : 'hidden'}>
-          <Field
-            label="Installment charge (%)"
-            name="markupPercent"
-            hint="Charged on the financed amount (price less deposit). Prefilled with this project's rate — leave it blank to use that rate."
-          >
-            <input
+        <div className={planType === 'INSTALLMENTS' ? 'mt-4 space-y-3' : 'hidden'}>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+              <input
+                type="radio"
+                name="feeMode"
+                value="PERCENT"
+                checked={feeMode === 'PERCENT'}
+                onChange={() => setFeeMode('PERCENT')}
+                disabled={planType !== 'INSTALLMENTS'}
+              />
+              <span className="text-sm">Charge a percentage</span>
+            </label>
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+              <input
+                type="radio"
+                name="feeMode"
+                value="FIXED"
+                checked={feeMode === 'FIXED'}
+                onChange={() => setFeeMode('FIXED')}
+                disabled={planType !== 'INSTALLMENTS'}
+              />
+              <span className="text-sm">Charge a fixed amount</span>
+            </label>
+          </div>
+
+          <div className={feeMode === 'PERCENT' ? '' : 'hidden'}>
+            <Field
+              label="Installment charge (%)"
               name="markupPercent"
-              defaultValue={defaultMarkupPercent}
-              placeholder={defaultMarkupPercent}
-              disabled={planType !== 'INSTALLMENTS'}
-              className={inputClass}
-            />
-          </Field>
+              hint="Charged on the financed amount (price less deposit). Prefilled with this project's rate — leave it blank to use that rate."
+            >
+              <input
+                name="markupPercent"
+                defaultValue={defaultMarkupPercent}
+                placeholder={defaultMarkupPercent}
+                disabled={planType !== 'INSTALLMENTS' || feeMode !== 'PERCENT'}
+                className={inputClass}
+              />
+            </Field>
+          </div>
+
+          {/* One flat fee, the same whatever the unit costs and whatever the
+              deposit is — which is the point of it, and why this field is an
+              amount rather than a rate. Interest is not permissible in some of
+              the markets this platform serves. */}
+          <div className={feeMode === 'FIXED' ? '' : 'hidden'}>
+            <Field
+              label={`Installment charge (${currency})`}
+              name="fixedFee"
+              hint="A flat amount, not a percentage — the same charge whatever the unit costs. It must be less than the amount being financed. Leave it blank to use this project's charge."
+            >
+              <input
+                name="fixedFee"
+                defaultValue={defaultFixedFee}
+                placeholder={defaultFixedFee}
+                disabled={planType !== 'INSTALLMENTS' || feeMode !== 'FIXED'}
+                className={inputClass}
+              />
+            </Field>
+          </div>
         </div>
       </Card>
 

@@ -4,7 +4,11 @@ import { HeroBand } from '@/server/pdf/HeroBand'
 import { Masthead } from '@/server/pdf/Masthead'
 import type { PdfImage } from '@/server/media/images'
 import { formatMinor } from '@/domain/currency'
-import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
+import {
+  installmentFeeLabel,
+  scheduleEntryLabel,
+  type InstallmentFeeConfig
+} from '@/domain/schedule'
 import type { InstallmentStatus } from '@/domain/status'
 
 export interface StatementProps {
@@ -40,10 +44,16 @@ export interface StatementProps {
   termMonths: number | null
   priceMinor: bigint
   depositMinor: bigint
-  /** Basis points, for the rate quoted beside the charge. Zero prints nothing. */
-  markupBps: number
+  /**
+   * The charge the sale was signed at, out of its own snapshot. Only the label
+   * uses it: `installmentFeeLabel` quotes the rate for a PERCENT charge and
+   * quotes nothing for a FIXED one, which is the rule this document must not
+   * break — a flat fee is not a percentage of anything, and printing one beside
+   * it would put the interest framing back on the buyer's own copy.
+   */
+  fee: InstallmentFeeConfig
   /** The charge in money, already inside the installments below. */
-  markupMinor: bigint
+  feeMinor: bigint
   signedAt: Date
   expectedCompletion: Date
   entries: Array<{
@@ -114,12 +124,10 @@ export function StatementDocument(props: StatementProps) {
             <Text style={styles.label}>Deposit (due at signing)</Text>
             <Text>{formatMinor(props.depositMinor, props.currency)}</Text>
           </View>
-          {props.markupMinor > 0n ? (
+          {props.feeMinor > 0n ? (
             <View style={styles.row}>
-              <Text style={styles.label}>
-                Installment charge ({bpsToPercentString(props.markupBps)}%)
-              </Text>
-              <Text>{formatMinor(props.markupMinor, props.currency)}</Text>
+              <Text style={styles.label}>{installmentFeeLabel(props.fee)}</Text>
+              <Text>{formatMinor(props.feeMinor, props.currency)}</Text>
             </View>
           ) : null}
         </View>

@@ -2,8 +2,19 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { prisma } from '@/server/db'
-import { MarkupOverrideSchema, PlanSelectionSchema, previewSchedule } from '@/server/services/sales'
-import { bpsToPercentString, scheduleEntryLabel } from '@/domain/schedule'
+import {
+  FeeOverrideSchema,
+  PlanSelectionSchema,
+  previewSchedule,
+  projectFeeConfig
+} from '@/server/services/sales'
+import {
+  NO_INSTALLMENT_FEE,
+  bpsToPercentString,
+  installmentFeeLabel,
+  scheduleEntryLabel,
+  type InstallmentFeeConfig
+} from '@/domain/schedule'
 import { formatMinor, toMinor } from '@/domain/currency'
 import { Card, ErrorText, PageHeader } from '@/components/ui'
 import { UnitImagery } from '@/components/media'
@@ -70,8 +81,12 @@ export default async function ConfirmSalePage({
   }
   const plan = parsedPlan.data
 
-  const parsedMarkup = MarkupOverrideSchema.safeParse(searchParams.markupBps)
-  if (!parsedMarkup.success) {
+  const parsedFee = FeeOverrideSchema.safeParse({
+    feeMode: searchParams.feeMode,
+    markupBps: searchParams.markupBps,
+    fixedFeeMinor: searchParams.fixedFeeMinor
+  })
+  if (!parsedFee.success) {
     return (
       <ProblemCard
         title="Confirm the sale"
@@ -80,7 +95,9 @@ export default async function ConfirmSalePage({
       />
     )
   }
-  const markupOverrideBps = (parsedMarkup.data as number | undefined) ?? null
+  // Undefined, not zero, when the agent left the field alone — that is what
+  // tells this page to quote the project's own charge.
+  const feeOverride = parsedFee.data
 
   // Re-fetched, never trusted from the query string: availability may have
   // changed since step 1, and the price and currency must come from the
@@ -88,7 +105,16 @@ export default async function ConfirmSalePage({
   const unit = await prisma.unit.findFirst({
     where: { id: params.unitId, projectId: params.id, project: { orgId: actor.orgId } },
     include: {
-      project: { select: { id: true, name: true, currency: true, installmentMarkupBps: true } }
+      project: {
+        select: {
+          id: true,
+          name: true,
+          currency: true,
+          installmentFeeMode: true,
+          installmentMarkupBps: true,
+          installmentFixedFeeMinor: true
+        }
+      }
     }
   })
   if (!unit) notFound()
@@ -121,12 +147,13 @@ export default async function ConfirmSalePage({
   const currency = unit.project.currency
 
   // The same resolution createSale performs: the override when staff set one,
-  // the project default otherwise, and zero for a full payment because nothing
-  // is financed. Resolved here so the figures quoted are the figures written.
-  const markupBps =
+  // the project default otherwise, and no charge at all for a full payment
+  // because nothing is financed. Resolved here so the figures quoted are the
+  // figures written.
+  const fee: InstallmentFeeConfig =
     plan.planType === 'INSTALLMENTS'
-      ? markupOverrideBps ?? unit.project.installmentMarkupBps
-      : 0
+      ? feeOverride ?? projectFeeConfig(unit.project)
+      : NO_INSTALLMENT_FEE
 
   let depositMinor: bigint
   let preview: ReturnType<typeof previewSchedule>
@@ -136,7 +163,7 @@ export default async function ConfirmSalePage({
       planType: plan.planType,
       priceMinor: unit.priceMinor,
       depositMinor,
-      markupBps,
+      fee,
       months: plan.termMonths,
       signedAt: new Date()
     })
@@ -210,13 +237,11 @@ export default async function ConfirmSalePage({
             </>
           ) : null}
 
-          {preview.markupMinor > 0n ? (
+          {preview.feeMinor > 0n ? (
             <>
-              <dt className="text-slate-500">
-                Installment charge ({bpsToPercentString(markupBps)}%)
-              </dt>
+              <dt className="text-slate-500">{installmentFeeLabel(fee)}</dt>
               <dd className="text-right font-medium">
-                +{formatMinor(preview.markupMinor, currency)}
+                +{formatMinor(preview.feeMinor, currency)}
               </dd>
             </>
           ) : null}
@@ -255,12 +280,29 @@ export default async function ConfirmSalePage({
         </dl>
       </Card>
 
-      {preview.markupMinor > 0n ? (
+      {/* The fee-consent sentence, and the one place the two modes need real
+          prose rather than a label. A percentage is explained as a rate on the
+          financed amount; a flat fee is explained as exactly that, with no
+          percentage anywhere in it — a developer choosing FIXED is doing so
+          because a rate on the financed amount is not permissible in their
+          market, and reading them one from this page would defeat it. */}
+      {preview.feeMinor > 0n ? (
         <p className="mb-4 text-xs text-slate-500">
-          The installment charge of {formatMinor(preview.markupMinor, currency)} is{' '}
-          {bpsToPercentString(markupBps)}% of the financed{' '}
-          {formatMinor(unit.priceMinor - depositMinor, currency)}. It is spread across the monthly
-          installments
+          {fee.mode === 'PERCENT' ? (
+            // Inside this branch the rate is real, so quoting it is correct —
+            // it is the FIXED branch below that must never see a percentage.
+            <>
+              The installment charge of {formatMinor(preview.feeMinor, currency)} is{' '}
+              {bpsToPercentString(fee.bps)}% of the financed{' '}
+              {formatMinor(unit.priceMinor - depositMinor, currency)}.
+            </>
+          ) : (
+            <>
+              The installment charge is a flat {formatMinor(preview.feeMinor, currency)} — not a
+              percentage, and the same amount whatever is financed.
+            </>
+          )}{' '}
+          It is spread across the monthly installments
           {depositMinor > 0n ? '; the deposit itself is not charged' : ''}. Read this to the buyer
           before they sign.
         </p>
@@ -303,7 +345,15 @@ export default async function ConfirmSalePage({
         planType={plan.planType}
         deposit={plan.deposit}
         termMonths={plan.termMonths}
-        markupBps={markupOverrideBps}
+        // The override as it was priced above, or nulls meaning "the project
+        // default". Minor units cross as a string: a bigint may not enter a
+        // client component, and this one has already been parsed against the
+        // project's currency, so it must not be re-parsed as a decimal.
+        feeMode={feeOverride?.mode ?? null}
+        markupBps={feeOverride?.mode === 'PERCENT' ? feeOverride.bps : null}
+        fixedFeeMinor={
+          feeOverride?.mode === 'FIXED' ? feeOverride.fixedMinor.toString() : null
+        }
       />
 
       <p className="mt-3 text-center text-sm">

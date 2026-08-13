@@ -31,8 +31,8 @@ const STATEMENT: StatementProps = {
   termMonths: 24,
   priceMinor: 14500000000n,
   depositMinor: 500000000n,
-  markupBps: 1000,
-  markupMinor: 1400000000n,
+  fee: { mode: 'PERCENT', bps: 1000, fixedMinor: 0n },
+  feeMinor: 1400000000n,
   signedAt: new Date('2026-02-01T00:00:00Z'),
   expectedCompletion: new Date('2028-06-30T00:00:00Z'),
   entries: [

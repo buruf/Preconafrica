@@ -130,3 +130,87 @@ describe('CreateProjectSchema — the installment charge', () => {
     )
   })
 })
+
+describe('CreateProjectSchema — a fixed installment charge', () => {
+  // The second mode is a first-class requirement, not a variant: a percentage
+  // of the financed amount is interest, and interest is not permissible in
+  // several of the markets this platform serves. See `InstallmentFeeMode`.
+  const fixedProject = { ...valid, installmentFeeMode: 'FIXED', installmentFixedFee: '2500000' }
+
+  it('defaults to PERCENT when the mode is blank or absent', () => {
+    // Every caller that predates FIXED omits the field, and must keep the
+    // behaviour it had.
+    expect(CreateProjectSchema.parse(valid).installmentFeeMode).toBe('PERCENT')
+    expect(CreateProjectSchema.parse({ ...valid, installmentFeeMode: '' }).installmentFeeMode).toBe(
+      'PERCENT'
+    )
+  })
+
+  it('accepts a flat amount in the project currency', () => {
+    expect(CreateProjectSchema.safeParse(fixedProject).success).toBe(true)
+    // Zero is a project that charges nothing, which is ordinary, not an error.
+    expect(
+      CreateProjectSchema.safeParse({ ...fixedProject, installmentFixedFee: '0' }).success
+    ).toBe(true)
+    expect(
+      CreateProjectSchema.safeParse({ ...fixedProject, installmentFixedFee: '' }).success
+    ).toBe(true)
+  })
+
+  it('validates the amount against the project currency, exactly as the price is', () => {
+    // Two decimals is fine in NGN and impossible in RWF — the same rule
+    // defaultPrice follows, because both are money in the same currency.
+    expect(
+      CreateProjectSchema.safeParse({ ...fixedProject, installmentFixedFee: '2500000.50' }).success
+    ).toBe(true)
+    expect(
+      CreateProjectSchema.safeParse({
+        ...fixedProject,
+        currency: 'RWF',
+        defaultPrice: '95000000',
+        installmentFixedFee: '2500000.50'
+      }).success
+    ).toBe(false)
+  })
+
+  it('rejects a negative or malformed flat amount', () => {
+    for (const amount of ['-1', '-2500000', 'lots', '1.2.3']) {
+      expect(
+        CreateProjectSchema.safeParse({ ...fixedProject, installmentFixedFee: amount }).success,
+        amount
+      ).toBe(false)
+    }
+  })
+
+  it('names the offending field so the form can point at it', () => {
+    const result = CreateProjectSchema.safeParse({
+      ...fixedProject,
+      installmentFixedFee: '2500000.999'
+    })
+    expect(result.success).toBe(false)
+    if (result.success) return
+    expect(result.error.issues.some((issue) => issue.path[0] === 'installmentFixedFee')).toBe(true)
+  })
+
+  it('only validates the field the chosen mode actually uses', () => {
+    // A developer switching a project onto a flat fee should not be made to
+    // "fix" a percentage nobody is going to charge, and the reverse.
+    expect(
+      CreateProjectSchema.safeParse({ ...fixedProject, installmentMarkupPercent: '7.555' }).success
+    ).toBe(true)
+    expect(
+      CreateProjectSchema.safeParse({
+        ...valid,
+        installmentFeeMode: 'PERCENT',
+        installmentMarkupPercent: '10',
+        installmentFixedFee: 'nonsense'
+      }).success
+    ).toBe(true)
+  })
+
+  it('rejects a mode that does not exist', () => {
+    expect(CreateProjectSchema.safeParse({ ...valid, installmentFeeMode: 'ANNUAL' }).success).toBe(
+      false
+    )
+  })
+})
