@@ -6,11 +6,16 @@ import { generateSchedule } from '../src/domain/schedule'
 import { generateUnitNames } from '../src/domain/units'
 import { applyAllocations } from '../src/server/services/allocations'
 import { formatDocumentNumber, nextDocumentSequence } from '../src/server/documents/numbering'
+import { assertSeedTargetIsSafe } from './seed-guard'
 
 const prisma = new PrismaClient()
 const utc = (y: number, m: number, d: number) => new Date(Date.UTC(y, m - 1, d))
 
 async function main() {
+  // Before the client connects, let alone deletes anything: this throws unless
+  // DATABASE_URL demonstrably points somewhere other than the protected branch.
+  assertSeedTargetIsSafe()
+
   // Order matters: children before parents.
   await prisma.notificationLog.deleteMany()
   await prisma.document.deleteMany()
