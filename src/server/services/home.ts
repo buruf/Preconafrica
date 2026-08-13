@@ -12,6 +12,9 @@ import { getOrganizationName } from '@/server/services/team'
  * `arrearsReport`, which already owns what "overdue" means. This module exists
  * so the page can be four `map`s over a plain object instead of five queries
  * and a reduce.
+ *
+ * The one place that needs care is `buyersOverdue` — see the note at the bottom
+ * of `staffHome`. It is a count of distinct buyers, not of rows.
  */
 
 export interface StaffProjectCard {
@@ -37,6 +40,7 @@ export interface StaffHome {
   /** Across the whole organisation, not per project. */
   unitsAvailable: number
   salesActive: number
+  /** Distinct buyers with something overdue — not the number of late contracts. */
   buyersOverdue: number
 }
 
@@ -92,8 +96,13 @@ export async function staffHome(actor: SessionActor, asOf: Date): Promise<StaffH
     }),
     unitsAvailable: availability.reduce((sum, row) => sum + row._count._all, 0),
     salesActive,
-    // One row per overdue sale, and a sale has one buyer — so the row count is
-    // the number of buyers in arrears.
-    buyersOverdue: arrears.length
+    // `arrearsReport` returns one row per overdue *sale*, and `Buyer.sales` is a
+    // list in the schema — one buyer can hold several contracts, which is the
+    // whole reason `ArrearsRow` carries `buyerId` at all. So `arrears.length` is
+    // a count of late contracts, not of buyers, and this figure is labelled
+    // "Buyers overdue". Counting distinct buyers is also what keeps `/` and
+    // `/arrears` from showing two different numbers under one label: the arrears
+    // page does exactly this, and prints "across N contracts" when the two differ.
+    buyersOverdue: new Set(arrears.map((row) => row.buyerId)).size
   }
 }
