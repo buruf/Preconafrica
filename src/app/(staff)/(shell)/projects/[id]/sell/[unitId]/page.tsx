@@ -5,7 +5,8 @@ import { prisma } from '@/server/db'
 import { DEFAULT_TERM_MONTHS, listBuyers } from '@/server/services/sales'
 import { bpsToPercentString } from '@/domain/schedule'
 import { formatMinor, toMajorString } from '@/domain/currency'
-import { Card, PageHeader } from '@/components/ui'
+import { ButtonLink, Card, PageHeader } from '@/components/ui'
+import { indicativeUsdLine } from '@/components/indicative-usd'
 import { UnitImagery } from '@/components/media'
 import { SellForm } from './SellForm'
 
@@ -51,21 +52,20 @@ export default async function SellUnitPage({
       <>
         <PageHeader title={`Unit ${unit.name}`} subtitle={unit.project.name} />
         <Card>
-          <p className="text-sm text-slate-700">
+          <p className="text-[15px] text-ink">
             Unit {unit.name} is no longer available — it is marked{' '}
             {unit.status.toLowerCase()}.
           </p>
-          <p className="mt-3 text-sm">
-            <Link href={backHref} className="font-medium underline">
-              Back to the inventory
-            </Link>
-          </p>
+          <ButtonLink href={backHref} variant="secondary" className="mt-4 w-full sm:w-auto">
+            Back to the inventory
+          </ButtonLink>
         </Card>
       </>
     )
   }
 
   const buyers = await listBuyers(actor)
+  const indicativeUsd = indicativeUsdLine(unit.priceMinor, unit.project.currency)
 
   return (
     <>
@@ -73,10 +73,17 @@ export default async function SellUnitPage({
         title={`Sell unit ${unit.name}`}
         subtitle={`${unit.project.name} · ${unit.bedrooms} bed · ${unit.sizeSqm.toString()} m²`}
         action={
-          <span className="text-lg font-semibold">
-            {/* BigInt never crosses the RSC boundary — formatted on the server. */}
-            {formatMinor(unit.priceMinor, unit.project.currency)}
-          </span>
+          <div className="text-right">
+            <p className="text-[22px] font-bold leading-tight tabular-nums text-navy-900">
+              {/* BigInt never crosses the RSC boundary — formatted on the server. */}
+              {formatMinor(unit.priceMinor, unit.project.currency)}
+            </p>
+            {/* Approximate, labelled, and read by nothing that prices this sale
+                — see `@/components/indicative-usd`. */}
+            {indicativeUsd ? (
+              <p className="text-[13px] tabular-nums text-muted">{indicativeUsd}</p>
+            ) : null}
+          </div>
         }
       />
 
@@ -111,11 +118,16 @@ export default async function SellUnitPage({
         )}
       />
 
-      <p className="mt-3 text-center text-sm">
-        <Link href={backHref} className="underline">
+      {/* 44px, centred, and a link rather than a button: it navigates, and it is
+          the secondary way off this screen. */}
+      <div className="mt-3 flex justify-center">
+        <Link
+          href={backHref}
+          className="inline-flex min-h-11 items-center px-2 text-sm font-medium text-muted underline"
+        >
           Back to the inventory
         </Link>
-      </p>
+      </div>
     </>
   )
 }

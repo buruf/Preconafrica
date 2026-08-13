@@ -16,7 +16,8 @@ import {
   type InstallmentFeeConfig
 } from '@/domain/schedule'
 import { formatMinor, toMinor } from '@/domain/currency'
-import { Card, ErrorText, PageHeader } from '@/components/ui'
+import { ButtonLink, Card, ErrorText, PageHeader } from '@/components/ui'
+import { indicativeUsdLine } from '@/components/indicative-usd'
 import { UnitImagery } from '@/components/media'
 import { ConfirmForm } from './ConfirmForm'
 
@@ -39,11 +40,9 @@ function ProblemCard({
       <PageHeader title={title} />
       <Card>
         <ErrorText>{message}</ErrorText>
-        <p className="mt-3 text-sm">
-          <Link href={backHref} className="font-medium underline">
-            Back to the sale form
-          </Link>
-        </p>
+        <ButtonLink href={backHref} variant="secondary" className="mt-4 w-full sm:w-auto">
+          Back to the sale form
+        </ButtonLink>
       </Card>
     </>
   )
@@ -192,6 +191,10 @@ export default async function ConfirmSalePage({
     preview.finalMinor !== preview.monthlyMinor
   const finalLabel = finalDiffers ? formatMinor(preview.finalMinor as bigint, currency) : null
 
+  // The price only, never the total and never the monthly: this line is a rough
+  // sense of scale for one figure, not a second column of the contract.
+  const indicativeUsd = indicativeUsdLine(unit.priceMinor, currency)
+
   return (
     <>
       <PageHeader
@@ -214,33 +217,44 @@ export default async function ConfirmSalePage({
       </Card>
 
       <Card className="mb-4">
-        <dl className="grid grid-cols-2 gap-y-2 text-sm">
-          <dt className="text-slate-500">Buyer</dt>
-          <dd className="text-right font-medium">
+        <dl className="grid grid-cols-2 gap-y-2 text-[15px]">
+          <dt className="text-[13px] text-muted">Buyer</dt>
+          <dd className="text-right font-semibold text-ink">
             {buyer.fullName}
-            <span className="block text-xs font-normal text-slate-500">{buyer.phone}</span>
+            <span className="block text-[13px] font-normal text-muted">{buyer.phone}</span>
           </dd>
 
-          <dt className="text-slate-500">Unit</dt>
-          <dd className="text-right font-medium">{unit.name}</dd>
+          <dt className="text-[13px] text-muted">Unit</dt>
+          <dd className="text-right font-semibold text-ink">{unit.name}</dd>
 
-          <dt className="text-slate-500">Price</dt>
-          <dd className="text-right font-medium">{formatMinor(unit.priceMinor, currency)}</dd>
+          <dt className="text-[13px] text-muted">Price</dt>
+          <dd className="text-right font-semibold tabular-nums text-ink">
+            {formatMinor(unit.priceMinor, currency)}
+            {/* The mockup's rough dollar equivalent, at the point of commitment.
+                Presentational only: the figure signed below is the naira one,
+                and `@/components/indicative-usd` is unreachable from anything
+                that prices this sale. */}
+            {indicativeUsd ? (
+              <span className="block text-[13px] font-normal tabular-nums text-muted">
+                {indicativeUsd}
+              </span>
+            ) : null}
+          </dd>
 
           {depositMinor > 0n ? (
             <>
-              <dt className="text-slate-500">Deposit</dt>
-              <dd className="text-right font-medium">
+              <dt className="text-[13px] text-muted">Deposit</dt>
+              <dd className="text-right font-semibold tabular-nums text-ink">
                 {formatMinor(depositMinor, currency)}
-                <span className="block text-xs font-normal text-slate-500">due at signing</span>
+                <span className="block text-[13px] font-normal text-muted">due at signing</span>
               </dd>
             </>
           ) : null}
 
           {preview.feeMinor > 0n ? (
             <>
-              <dt className="text-slate-500">{installmentFeeLabel(fee)}</dt>
-              <dd className="text-right font-medium">
+              <dt className="text-[13px] text-muted">{installmentFeeLabel(fee)}</dt>
+              <dd className="text-right font-semibold tabular-nums text-ink">
                 +{formatMinor(preview.feeMinor, currency)}
               </dd>
             </>
@@ -248,15 +262,17 @@ export default async function ConfirmSalePage({
 
           {plan.planType === 'INSTALLMENTS' ? (
             <>
-              <dt className="text-slate-500">Term</dt>
-              <dd className="text-right font-medium">{plan.termMonths} months</dd>
+              <dt className="text-[13px] text-muted">Term</dt>
+              <dd className="text-right font-semibold tabular-nums text-ink">
+                {plan.termMonths} months
+              </dd>
             </>
           ) : null}
 
           {preview.monthlyMinor !== null ? (
             <>
-              <dt className="text-slate-500">Monthly</dt>
-              <dd className="text-right font-medium">
+              <dt className="text-[13px] text-muted">Monthly</dt>
+              <dd className="text-right font-semibold tabular-nums text-ink">
                 {formatMinor(preview.monthlyMinor, currency)}
               </dd>
             </>
@@ -264,19 +280,21 @@ export default async function ConfirmSalePage({
 
           {finalLabel ? (
             <>
-              <dt className="text-slate-500">Final installment</dt>
-              <dd className="text-right font-medium">{finalLabel}</dd>
+              <dt className="text-[13px] text-muted">Final installment</dt>
+              <dd className="text-right font-semibold tabular-nums text-ink">{finalLabel}</dd>
             </>
           ) : null}
 
-          <dt className="font-medium text-slate-900">Total owed</dt>
-          <dd className="text-right font-semibold">{formatMinor(preview.totalMinor, currency)}</dd>
+          <dt className="font-semibold text-navy-900">Total owed</dt>
+          <dd className="text-right font-bold tabular-nums text-navy-900">
+            {formatMinor(preview.totalMinor, currency)}
+          </dd>
 
-          <dt className="text-slate-500">First payment due</dt>
-          <dd className="text-right font-medium">{firstDue}</dd>
+          <dt className="text-[13px] text-muted">First payment due</dt>
+          <dd className="text-right font-semibold tabular-nums text-ink">{firstDue}</dd>
 
-          <dt className="text-slate-500">Last payment due</dt>
-          <dd className="text-right font-medium">{lastDue}</dd>
+          <dt className="text-[13px] text-muted">Last payment due</dt>
+          <dd className="text-right font-semibold tabular-nums text-ink">{lastDue}</dd>
         </dl>
       </Card>
 
@@ -287,7 +305,7 @@ export default async function ConfirmSalePage({
           because a rate on the financed amount is not permissible in their
           market, and reading them one from this page would defeat it. */}
       {preview.feeMinor > 0n ? (
-        <p className="mb-4 text-xs text-slate-500">
+        <p className="mb-4 text-[13px] text-muted">
           {fee.mode === 'PERCENT' ? (
             // Inside this branch the rate is real, so quoting it is correct —
             // it is the FIXED branch below that must never see a percentage.
@@ -309,29 +327,33 @@ export default async function ConfirmSalePage({
       ) : null}
 
       {finalLabel ? (
-        <p className="mb-4 text-xs text-slate-500">
+        <p className="mb-4 text-[13px] text-muted">
           The last payment is {finalLabel} because the monthly figure is rounded down to the
           nearest minor unit.
         </p>
       ) : null}
 
       <Card className="mb-4">
-        <h2 className="mb-3 font-semibold">Full payment schedule</h2>
+        <h2 className="mb-3 text-base font-semibold text-navy-900">Full payment schedule</h2>
+        {/* The table scrolls inside this box rather than pushing the page
+            sideways — 375px is the floor, and three columns of money fit it. */}
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full text-[15px]">
             <thead>
-              <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
-                <th className="w-20 py-1">#</th>
-                <th className="py-1">Due date</th>
-                <th className="py-1 text-right">Amount</th>
+              <tr className="border-b border-line text-left text-[13px] font-medium text-muted">
+                <th className="w-20 py-1.5">#</th>
+                <th className="py-1.5">Due date</th>
+                <th className="py-1.5 text-right">Amount</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.sequence} className="border-b border-slate-100 last:border-0">
-                  <td className="py-1">{row.label}</td>
-                  <td className="py-1">{row.dueDate}</td>
-                  <td className="py-1 text-right">{row.amount}</td>
+                <tr key={row.sequence} className="border-b border-line last:border-0">
+                  <td className="py-1.5 text-ink">{row.label}</td>
+                  <td className="py-1.5 tabular-nums text-muted">{row.dueDate}</td>
+                  <td className="py-1.5 text-right font-semibold tabular-nums text-ink">
+                    {row.amount}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -356,11 +378,14 @@ export default async function ConfirmSalePage({
         }
       />
 
-      <p className="mt-3 text-center text-sm">
-        <Link href={backHref} className="underline">
+      <div className="mt-3 flex justify-center">
+        <Link
+          href={backHref}
+          className="inline-flex min-h-11 items-center px-2 text-sm font-medium text-muted underline"
+        >
           Back
         </Link>
-      </p>
+      </div>
     </>
   )
 }

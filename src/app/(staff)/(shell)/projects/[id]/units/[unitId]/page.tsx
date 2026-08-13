@@ -7,6 +7,7 @@ import { formatMinor, toMajorString } from '@/domain/currency'
 import { installmentFeeSummary } from '@/domain/schedule'
 import { projectFeeConfig } from '@/server/services/sales'
 import { ButtonLink, Card, MoneyPair, PageHeader, StatusPill } from '@/components/ui'
+import { indicativeUsdLine } from '@/components/indicative-usd'
 import { UnitImagery } from '@/components/media'
 import { UnitEditForm } from './UnitEditForm'
 
@@ -55,6 +56,7 @@ export default async function UnitPage({
   if (!unit) notFound()
 
   const money = (amount: bigint) => formatMinor(amount, project.currency)
+  const indicativeUsd = indicativeUsdLine(unit.priceMinor, project.currency)
 
   return (
     <>
@@ -100,7 +102,19 @@ export default async function UnitPage({
 
       <Card className="mb-4">
         <div className="divide-y divide-line">
-          <MoneyPair className="pb-2.5" label="Price" value={money(unit.priceMinor)} />
+          {/* The price, and under it the mockup's rough dollar equivalent. The
+              second line is presentation and nothing else — see
+              `@/components/indicative-usd`, which no money path may import — so
+              it is drawn here rather than folded into `MoneyPair`, and it simply
+              is not there for a currency with no rate. */}
+          <div className="pb-2.5">
+            <MoneyPair label="Price" value={money(unit.priceMinor)} />
+            {indicativeUsd ? (
+              <p className="mt-0.5 text-right text-[13px] tabular-nums text-muted">
+                {indicativeUsd}
+              </p>
+            ) : null}
+          </div>
           <MoneyPair className="py-2.5" label="Bedrooms" value={String(unit.bedrooms)} />
           <MoneyPair className="py-2.5" label="Size" value={`${unit.sizeSqm} m²`} />
           {/* The charge a "Sell" from here will prefill, quoted the same way the

@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, Card, ErrorText, Field } from '@/components/ui'
+import { Button, CONTROL_CLASS, Card, ErrorText, Field, Select } from '@/components/ui'
 import { previewSaleAction } from './actions'
 
 export interface BuyerOption {
@@ -20,8 +20,13 @@ function Submit() {
   )
 }
 
-const inputClass =
-  'min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-slate-900'
+/**
+ * The design system's control shell. These inputs cannot use `Field`'s own
+ * because each has to be `disabled` by state, which `Field` does not take — but
+ * they must not therefore be a *different* input, which is what a local copy of
+ * the class string had made them.
+ */
+const inputClass = CONTROL_CLASS
 
 /**
  * The whole of step 1 of a staff sale in one form: who is buying, on what
@@ -92,10 +97,10 @@ export function SellForm({
       <ErrorText>{error}</ErrorText>
 
       <Card>
-        <h2 className="mb-3 font-semibold">Buyer</h2>
+        <h2 className="mb-3 text-base font-semibold text-navy-900">Buyer</h2>
 
         <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
             <input
               type="radio"
               name="buyerMode"
@@ -103,9 +108,9 @@ export function SellForm({
               checked={buyerMode === 'new'}
               onChange={() => setBuyerMode('new')}
             />
-            <span className="text-sm">Register a new buyer</span>
+            <span className="text-[15px] text-ink">Register a new buyer</span>
           </label>
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
             <input
               type="radio"
               name="buyerMode"
@@ -114,7 +119,7 @@ export function SellForm({
               onChange={() => setBuyerMode('existing')}
               disabled={!hasBuyers}
             />
-            <span className="text-sm">
+            <span className="text-[15px] text-ink">
               Existing buyer{hasBuyers ? '' : ' (none registered yet)'}
             </span>
           </label>
@@ -123,20 +128,16 @@ export function SellForm({
         <div className={showExisting ? 'space-y-4' : 'hidden'}>
           {hasBuyers ? (
             <Field label="Choose a buyer" name="buyerId">
-              <select
-                name="buyerId"
-                disabled={hydrated && buyerMode !== 'existing'}
-                className={inputClass}
-              >
+              <Select name="buyerId" disabled={hydrated && buyerMode !== 'existing'}>
                 {buyers.map((buyer) => (
                   <option key={buyer.id} value={buyer.id}>
                     {buyer.fullName} · {buyer.phone}
                   </option>
                 ))}
-              </select>
+              </Select>
             </Field>
           ) : (
-            <p className="text-sm text-slate-500">
+            <p className="text-[15px] text-muted">
               No buyers are registered for your organisation yet. Register this one below.
             </p>
           )}
@@ -193,10 +194,10 @@ export function SellForm({
       </Card>
 
       <Card>
-        <h2 className="mb-3 font-semibold">Payment plan</h2>
+        <h2 className="mb-3 text-base font-semibold text-navy-900">Payment plan</h2>
 
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
             <input
               type="radio"
               name="planType"
@@ -204,9 +205,9 @@ export function SellForm({
               checked={planType === 'INSTALLMENTS'}
               onChange={() => setPlanType('INSTALLMENTS')}
             />
-            <span className="text-sm">Installments</span>
+            <span className="text-[15px] text-ink">Installments</span>
           </label>
-          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+          <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
             <input
               type="radio"
               name="planType"
@@ -214,7 +215,7 @@ export function SellForm({
               checked={planType === 'FULL'}
               onChange={() => setPlanType('FULL')}
             />
-            <span className="text-sm">Full payment</span>
+            <span className="text-[15px] text-ink">Full payment</span>
           </label>
         </div>
 
@@ -248,7 +249,7 @@ export function SellForm({
 
         <div className={planType === 'INSTALLMENTS' ? 'mt-4 space-y-3' : 'hidden'}>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
               <input
                 type="radio"
                 name="feeMode"
@@ -257,9 +258,9 @@ export function SellForm({
                 onChange={() => setFeeMode('PERCENT')}
                 disabled={planType !== 'INSTALLMENTS'}
               />
-              <span className="text-sm">Charge a percentage</span>
+              <span className="text-[15px] text-ink">Charge a percentage</span>
             </label>
-            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-slate-300 px-3">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 rounded-btn border border-line bg-surface px-3">
               <input
                 type="radio"
                 name="feeMode"
@@ -268,7 +269,7 @@ export function SellForm({
                 onChange={() => setFeeMode('FIXED')}
                 disabled={planType !== 'INSTALLMENTS'}
               />
-              <span className="text-sm">Charge a fixed amount</span>
+              <span className="text-[15px] text-ink">Charge a fixed amount</span>
             </label>
           </div>
 
