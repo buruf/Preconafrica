@@ -112,7 +112,33 @@ export function PageHeader({
  */
 const OVERRIDES_PADDING = /(?:^|\s)p-[^\s]+/
 
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
+/**
+ * The two surfaces a card is drawn on.
+ *
+ * `navy` exists because the mockup's hero figure — a buyer's outstanding balance
+ * — sits on a filled navy card rather than on `surface`. It is a variant of this
+ * component rather than a `bg-navy-900` in a caller's `className` on purpose:
+ * `bg-navy-900` and `bg-surface` are the same property at the same specificity,
+ * so which one won would come down to Tailwind's emission order — the exact trap
+ * the padding override below exists to close. Owning both fills here means a
+ * caller cannot get it wrong, and the border moves with the fill.
+ */
+export type CardTone = 'surface' | 'navy'
+
+const CARD_TONE: Record<CardTone, string> = {
+  surface: 'border-line bg-surface',
+  navy: 'border-navy-900 bg-navy-900'
+}
+
+export function Card({
+  children,
+  tone = 'surface',
+  className = ''
+}: {
+  children: ReactNode
+  tone?: CardTone
+  className?: string
+}) {
   // Tailwind emits `.p-0` *before* `.p-4`, so appending a caller's `p-0` after
   // the default lost on source order and silently did nothing — three screens
   // already wrap a divided list in `<Card className="p-0">` believing it
@@ -123,7 +149,7 @@ export function Card({ children, className = '' }: { children: ReactNode; classN
 
   return (
     <div
-      className={`rounded-card border border-line bg-surface shadow-card ${padding} ${className}`}
+      className={`rounded-card border shadow-card ${CARD_TONE[tone]} ${padding} ${className}`}
     >
       {children}
     </div>
@@ -244,6 +270,80 @@ export function ErrorText({ children }: { children?: ReactNode }) {
   )
 }
 
+/* --------------------------------------------------------------- inventory */
+
+/**
+ * One unit in the floor plate — the tile the mockup builds the inventory screen
+ * out of, and the thing an agent turns their phone round to show a walk-in
+ * buyer. Colour carries the status, so a floor reads as a picture rather than as
+ * a column of words.
+ *
+ * A link, not a button: it opens the unit's own screen (imagery, specs, price,
+ * and Sell / View sale), so it must be openable in a new tab, announced as a
+ * link, and reachable by keyboard. Three across at 375px gives a ~98px square,
+ * comfortably past the 44px tap-target floor — the floor is why the tile has a
+ * minimum height at all rather than sizing to its two lines of text.
+ */
+export function UnitTile({
+  name,
+  bedrooms,
+  status,
+  href,
+  className = ''
+}: {
+  name: string
+  bedrooms: number
+  status: StatusToken
+  href: string
+  className?: string
+}) {
+  return (
+    <Link
+      href={href}
+      className={`flex min-h-[4.5rem] flex-col items-center justify-center gap-0.5 rounded-btn border px-1 text-center transition-opacity active:opacity-80 ${STATUS_TONE[status]} ${className}`}
+    >
+      <span className="text-[15px] font-semibold leading-none">{name}</span>
+      {/* `muted` per DESIGN.md, deliberately not the status text colour: the
+          bed count is the same secondary fact on every tile, and drawing it in
+          three different colours would make it look like it meant three
+          different things. */}
+      <span className="text-[12px] leading-none text-muted">{bedrooms} bed</span>
+    </Link>
+  )
+}
+
+/**
+ * What the tile colours mean. A grid of coloured squares is only self-evident
+ * once, and the person it has to be self-evident for is the buyer looking over
+ * the agent's shoulder.
+ *
+ * Takes the states rather than hard-coding three, so the same legend serves the
+ * unit grid (Available / Reserved / Sold) and anything later that needs the
+ * installment triple. `statusLabel` supplies the wording, so a legend can never
+ * disagree with the pill it explains.
+ */
+export function StatusLegend({
+  statuses,
+  className = ''
+}: {
+  statuses: StatusToken[]
+  className?: string
+}) {
+  return (
+    <ul className={`flex flex-wrap items-center gap-x-4 gap-y-1.5 ${className}`}>
+      {statuses.map((status) => (
+        <li key={status} className="flex items-center gap-1.5">
+          <span
+            aria-hidden="true"
+            className={`h-3 w-3 shrink-0 rounded-[3px] border ${STATUS_TONE[status]}`}
+          />
+          <span className="text-[13px] font-medium text-muted">{statusLabel(status)}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /* -------------------------------------------------------------- figures */
 
 /**
@@ -261,6 +361,8 @@ export function StatCard({
   value,
   sub,
   tone = 'default',
+  surface = 'default',
+  size = 'default',
   className = ''
 }: {
   label: string
@@ -269,22 +371,45 @@ export function StatCard({
   sub?: ReactNode
   /** Tints the figure and the sub-line. `default` is ink on surface. */
   tone?: 'default' | 'good' | 'warn' | 'bad'
+  /**
+   * `navy` fills the card and inverts the text — the mockup's hero balance.
+   * It overrides `tone`, because a red figure on navy is unreadable and the
+   * whole point of the filled card is that this is *the* number on the screen;
+   * anything urgent about it goes in `sub`, which stays legible.
+   */
+  surface?: 'default' | 'navy'
+  /** `hero` is the 32px figure the filled balance card carries. */
+  size?: 'default' | 'hero'
   className?: string
 }) {
-  const figureTone = {
-    default: 'text-navy-900',
-    good: 'text-status-paid-text',
-    warn: 'text-status-partial-text',
-    bad: 'text-status-overdue-text'
-  }[tone]
+  const navy = surface === 'navy'
+
+  const figureTone = navy
+    ? 'text-surface'
+    : {
+        default: 'text-navy-900',
+        good: 'text-status-paid-text',
+        warn: 'text-status-partial-text',
+        bad: 'text-status-overdue-text'
+      }[tone]
+
+  // navy-100 is DESIGN.md's light navy tint; on the filled card it is the label
+  // colour `muted` would be on surface, and it keeps the label clearly secondary
+  // to the figure instead of competing with it in plain white.
+  const labelTone = navy ? 'text-navy-100' : 'text-muted'
+  const subTone = navy ? 'text-navy-100' : tone === 'default' ? 'text-muted' : figureTone
 
   return (
-    <Card className={className}>
-      <p className="text-[13px] font-medium text-muted">{label}</p>
-      <p className={`mt-1 text-[22px] font-bold leading-tight tabular-nums ${figureTone}`}>
+    <Card tone={navy ? 'navy' : 'surface'} className={className}>
+      <p className={`text-[13px] font-medium ${labelTone}`}>{label}</p>
+      <p
+        className={`mt-1 font-bold leading-tight tabular-nums ${
+          size === 'hero' ? 'text-[32px]' : 'text-[22px]'
+        } ${figureTone}`}
+      >
         {value}
       </p>
-      {sub ? <p className={`mt-1 text-[13px] ${tone === 'default' ? 'text-muted' : figureTone}`}>{sub}</p> : null}
+      {sub ? <p className={`mt-1 text-[13px] ${subTone}`}>{sub}</p> : null}
     </Card>
   )
 }
