@@ -41,7 +41,7 @@ function FrameGlyph() {
     <svg
       viewBox="0 0 24 24"
       aria-hidden="true"
-      className="h-6 w-6 text-slate-400"
+      className="h-6 w-6 text-muted"
       fill="none"
       stroke="currentColor"
       strokeWidth="1.5"
@@ -70,10 +70,10 @@ export function MediaPlaceholder({
 }) {
   return (
     <div
-      className={`flex ${RATIO[kind]} w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-slate-50 ${className}`}
+      className={`flex ${RATIO[kind]} w-full flex-col items-center justify-center gap-1.5 rounded-btn border border-dashed border-line bg-page ${className}`}
     >
       <FrameGlyph />
-      <span className="px-2 text-center text-xs font-medium text-slate-500">
+      <span className="px-2 text-center text-xs font-medium text-muted">
         {label ?? LABEL[kind]}
       </span>
     </div>
@@ -114,7 +114,7 @@ export function MediaImage({
       // correctly sized gap instead of shifting everything below it. `object-cover`
       // because a developer's photo will be any ratio at all and letterboxing an
       // inventory banner looks like a bug.
-      className={`${RATIO[kind]} w-full rounded-lg border border-slate-200 bg-slate-50 object-cover ${className}`}
+      className={`${RATIO[kind]} w-full rounded-btn border border-line bg-page object-cover ${className}`}
     />
   )
 }
@@ -153,7 +153,7 @@ export function UnitImagery({
           scroll. */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-[minmax(0,16rem)_1fr]">
         <div>
-          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">
             Layout
           </p>
           <MediaImage
@@ -164,7 +164,7 @@ export function UnitImagery({
           />
         </div>
         <div>
-          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-slate-500">
+          <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">
             Renders
           </p>
           <MediaGallery urls={renderImageUrls} alt={`Artist's impression of ${subject}`} />

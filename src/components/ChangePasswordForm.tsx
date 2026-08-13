@@ -36,7 +36,7 @@ export function ChangePasswordForm() {
         />
         <Field label="Confirm new password" name="confirmation" type="password" required />
 
-        <p className="text-xs text-slate-500">
+        <p className="text-[13px] text-muted">
           Changing your password signs you out everywhere, including here. You will be asked to
           sign in again with the new one.
         </p>

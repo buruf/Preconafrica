@@ -11,7 +11,7 @@ function IssueButton() {
     <button
       type="submit"
       disabled={pending}
-      className="inline-flex min-h-11 items-center text-sm font-medium underline disabled:opacity-50"
+      className="inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline disabled:opacity-50"
     >
       {pending ? 'Issuing…' : 'Issue invoice'}
     </button>
@@ -44,7 +44,7 @@ export function InvoiceControl({
     return (
       <Link
         href={`/api/documents/${documentId}`}
-        className="inline-flex min-h-11 items-center text-sm font-medium underline"
+        className="inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
       >
         Invoice
       </Link>

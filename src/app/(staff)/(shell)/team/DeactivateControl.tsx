@@ -30,7 +30,7 @@ export function DeactivateControl({ userId }: { userId: string }) {
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="inline-flex min-h-11 items-center text-sm font-medium text-rose-700 underline"
+        className="inline-flex min-h-11 items-center text-sm font-semibold text-status-overdue-text underline"
       >
         Deactivate
       </button>
@@ -41,7 +41,7 @@ export function DeactivateControl({ userId }: { userId: string }) {
     <form action={formAction} className="w-full space-y-2 sm:w-56">
       <input type="hidden" name="userId" value={userId} />
       <ErrorText>{error}</ErrorText>
-      <p className="text-xs text-slate-500">
+      <p className="text-[13px] text-muted">
         They will no longer be able to sign in. This cannot be undone here.
       </p>
       <div className="flex gap-2">

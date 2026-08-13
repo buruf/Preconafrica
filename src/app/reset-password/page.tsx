@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { Card, ErrorText } from '@/components/ui'
+import { Logo } from '@/components/Logo'
 import { ResetPasswordForm } from './ResetPasswordForm'
 
 /**
@@ -11,6 +12,11 @@ import { ResetPasswordForm } from './ResetPasswordForm'
  * turn the page into a token oracle that answers without ever spending
  * anything, and it would buy the honest user nothing the submit does not
  * already tell them.
+ *
+ * The mark and the card treatment are the login page's, for the reason set out
+ * on `/forgot-password`: this is the last screen of a flow that started there
+ * and ends back on login, and a step in the middle that looks like a different
+ * product is the step a user abandons.
  */
 const INVALID_LINK = 'This reset link is invalid or has expired.'
 
@@ -27,17 +33,18 @@ export default function ResetPasswordPage({
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center p-5">
-      <h1 className="mb-1 text-2xl font-semibold">Choose a new password</h1>
-      <p className="mb-5 text-sm text-slate-500">
-        Then sign in with it — you will not need this link again.
-      </p>
+      <div className="mb-6">
+        <Logo size={40} withWordmark />
+        <p className="mt-3 text-[15px] text-muted">Buy early. Build the future.</p>
+      </div>
 
       {token ? (
         <ResetPasswordForm token={token} />
       ) : (
         <Card>
+          <h1 className="mb-3 text-xl font-semibold text-navy-900">Choose a new password</h1>
           <ErrorText>{INVALID_LINK}</ErrorText>
-          <p className="mt-3 text-sm text-slate-600">
+          <p className="mt-3 text-[15px] text-muted">
             Ask for a new one and we will email it to you.
           </p>
         </Card>
@@ -45,7 +52,7 @@ export default function ResetPasswordPage({
 
       <Link
         href="/forgot-password"
-        className="mt-4 flex min-h-11 items-center justify-center text-sm font-medium text-slate-600 underline"
+        className="mt-2 flex min-h-11 items-center justify-center text-sm font-medium text-muted underline"
       >
         Request a new reset link
       </Link>

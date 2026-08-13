@@ -43,7 +43,7 @@ export function HeroImageForm({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="inline-flex min-h-11 items-center text-sm font-medium text-slate-600 underline"
+        className="inline-flex min-h-11 items-center text-sm font-semibold text-muted underline"
       >
         {heroImageUrl ? 'Change the building photo' : 'Add a building photo'}
       </button>

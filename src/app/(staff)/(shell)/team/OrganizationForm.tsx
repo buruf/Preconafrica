@@ -34,7 +34,7 @@ export function OrganizationForm({
 
   return (
     <Card>
-      <h2 className="mb-3 text-sm font-semibold text-slate-900">Organisation</h2>
+      <h2 className="mb-3 text-base font-semibold text-navy-900">Organisation</h2>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-[8rem_1fr] sm:items-start">
         <div className="w-32">

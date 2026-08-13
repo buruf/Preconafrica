@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, ErrorText } from '@/components/ui'
+import { Button, CONTROL_CLASS, ErrorText } from '@/components/ui'
 import { voidPaymentAction } from './actions'
 
 function ConfirmButton() {
@@ -30,7 +30,7 @@ export function VoidControl({ saleId, paymentId }: { saleId: string; paymentId: 
       <button
         type="button"
         onClick={() => setExpanded(true)}
-        className="inline-flex min-h-11 items-center text-sm font-medium text-rose-700 underline"
+        className="inline-flex min-h-11 items-center text-sm font-semibold text-status-overdue-text underline"
       >
         Void
       </button>
@@ -46,7 +46,7 @@ export function VoidControl({ saleId, paymentId }: { saleId: string; paymentId: 
         name="reason"
         placeholder="Reason for voiding"
         required
-        className="min-h-11 w-full rounded-lg border border-slate-300 px-3 text-base outline-none focus:border-slate-900"
+        className={CONTROL_CLASS}
       />
       <div className="flex gap-2">
         <ConfirmButton />
