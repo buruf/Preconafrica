@@ -221,7 +221,9 @@ export function Field({
   hint,
   children
 }: {
-  label: string
+  /** Usually a string; a node when the row carries a control, e.g. a
+   *  password field's Show/Hide toggle sitting opposite its label. */
+  label: ReactNode
   name: string
   type?: string
   required?: boolean

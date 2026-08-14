@@ -85,6 +85,8 @@ export function SellForm({
   // False through the server render and the first client render, so the markup
   // below is identical on both and hydration cannot mismatch. Only afterwards
   // does either buyer block get hidden.
+  // Masked until the staff member asks for it — see the field below.
+  const [passwordRevealed, setPasswordRevealed] = useState(false)
   const [hydrated, setHydrated] = useState(false)
   useEffect(() => setHydrated(true), [])
 
@@ -178,13 +180,32 @@ export function SellForm({
             />
           </Field>
           <Field
-            label="Temporary password"
+            label={
+              <span className="flex items-center justify-between gap-2">
+                <span>Temporary password</span>
+                <button
+                  type="button"
+                  onClick={() => setPasswordRevealed((value) => !value)}
+                  aria-pressed={passwordRevealed}
+                  className="text-[13px] font-medium text-teal-500"
+                >
+                  {passwordRevealed ? 'Hide' : 'Show'}
+                </button>
+              </span>
+            }
             name="password"
             hint="Share this with the buyer — they can sign in with it immediately to follow their payments."
           >
+            {/* Masked by default with a deliberate reveal: this value is set
+                at a desk with the buyer sitting opposite, and it should not be
+                the default state of the screen. Kept as a bare input rather
+                than PasswordField because this one has to honour the
+                new-versus-existing-buyer disable, which that component does
+                not take. */}
             <input
               name="password"
-              type="text"
+              type={passwordRevealed ? 'text' : 'password'}
+              autoComplete="new-password"
               placeholder="At least 8 characters"
               disabled={hydrated && buyerMode !== 'new'}
               className={inputClass}

@@ -2,6 +2,7 @@
 
 import { useFormState, useFormStatus } from 'react-dom'
 import { Button, Card, ErrorText, Field } from '@/components/ui'
+import { PasswordField } from '@/components/PasswordField'
 import { createAgentAction } from './actions'
 
 function Submit() {
@@ -30,13 +31,12 @@ export function AddAgentForm() {
 
         <Field label="Full name" name="fullName" required placeholder="Chidi Okeke" />
         <Field label="Email" name="email" type="email" required placeholder="chidi@sunrise.test" />
-        <Field
+        <PasswordField
           label="Temporary password"
           name="password"
-          type="text"
           required
           placeholder="At least 8 characters"
-          hint="Share this with your agent — they can sign in with it immediately."
+          hint="Share this with your agent — they can sign in with it immediately, then change it from their profile."
         />
 
         <Submit />
