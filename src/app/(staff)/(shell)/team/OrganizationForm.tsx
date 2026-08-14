@@ -52,6 +52,7 @@ export function OrganizationForm({
           previewAlt={`${orgName} logo`}
           uploadKind="logo"
           previewKind="layout"
+          previewLabel="No logo"
           previewClassName="!aspect-square object-contain"
           initialUrl={logoUrl}
           pickLabel="Choose a logo"

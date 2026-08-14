@@ -122,8 +122,23 @@ export function checkUpload(bytes: Uint8Array): UploadVerdict {
 
 /* ------------------------------------------------------------- blob paths */
 
-/** The host every Vercel Blob store answers on. */
-export const BLOB_HOST_SUFFIX = '.public.blob.vercel-storage.com'
+/**
+ * The host suffix every Vercel Blob store answers on.
+ *
+ * Deliberately the *shared* part, not `.public.blob.vercel-storage.com`. A store
+ * is created in one of two access modes and its base URL says which —
+ * `{id}.public.blob.vercel-storage.com` or `{id}.private.blob.vercel-storage.com`
+ * — and this app needs a public one, because the URLs it stores are loaded
+ * directly by a buyer's browser and fetched server-side for PDF embedding.
+ *
+ * Matching only the public form would still be *correct* while the store is
+ * public, and would fail silently and expensively the day it is not: every
+ * previously uploaded image would stop being recognised as ours, so replacing
+ * one would quietly orphan it instead of deleting it, forever, with no error.
+ * Ownership is a claim about *our* store, and the tenant-prefix half of
+ * `isOwnedBlobUrl` is what actually keeps it narrow.
+ */
+export const BLOB_HOST_SUFFIX = '.blob.vercel-storage.com'
 
 /**
  * Ids only ever come from our own database (cuid) or from a generated token, so

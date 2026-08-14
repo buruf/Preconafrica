@@ -205,7 +205,17 @@ describe('blobPathFor', () => {
 /* -------------------------------------------------------- ours, or theirs */
 
 describe('isManagedBlobUrl', () => {
-  it('recognises a Vercel Blob URL', () => {
+  it('recognises a Vercel Blob URL in either access mode', () => {
+    // A store's base URL carries its mode. This app needs a public store, but
+    // recognising only the public form would mean that flipping the store to
+    // private stops every previously stored image from being recognised as
+    // ours — so replacing one would orphan it silently rather than delete it.
+    expect(isManagedBlobUrl('https://abc123.public.blob.vercel-storage.com/org/o1/logo-x.png')).toBe(
+      true
+    )
+    expect(
+      isManagedBlobUrl('https://abc123.private.blob.vercel-storage.com/org/o1/logo-x.png')
+    ).toBe(true)
     expect(isManagedBlobUrl(`https://abc123${BLOB_HOST_SUFFIX}/org/o1/logo-x.png`)).toBe(true)
   })
 

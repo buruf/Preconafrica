@@ -183,6 +183,7 @@ export function ImagePicker({
   previewKind,
   previewClassName = '',
   previewAlt,
+  previewLabel,
   initialUrl,
   projectId,
   unitId,
@@ -198,6 +199,12 @@ export function ImagePicker({
   previewKind: MediaKind
   previewClassName?: string
   previewAlt: string
+  /**
+   * Overrides what the empty placeholder says. The logo borrows the layout
+   * kind's 4:3 box, and without this it would announce itself as "Unit layout"
+   * on the team page.
+   */
+  previewLabel?: string
   initialUrl: string | null
   projectId?: string
   unitId?: string
@@ -233,6 +240,7 @@ export function ImagePicker({
           kind={previewKind}
           src={value || null}
           alt={previewAlt}
+          label={previewLabel}
           className={previewClassName}
         />
 
