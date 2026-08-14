@@ -7,6 +7,7 @@ import { generateUnitNames, UnitPatternError } from '@/domain/units'
 import { percentToBps } from '@/domain/schedule'
 import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
 import { ImageUrlField } from '@/server/services/media'
+import { deleteReplacedBlobs } from '@/server/media/blob'
 
 const MAX_UNITS = 2000
 
@@ -254,6 +255,15 @@ export async function updateProjectImagery(
 ) {
   assertRole(actor, ['ADMIN'])
 
+  // What is about to be replaced, read before the write so the old blob can be
+  // swept afterwards. This read is *not* the authorisation check — the write
+  // below still carries the orgId in its own predicate — so a project that
+  // disappears between the two is caught by the count rather than missed.
+  const before = await prisma.project.findFirst({
+    where: { id: projectId, orgId: actor.orgId },
+    select: { heroImageUrl: true }
+  })
+
   // Org-scoped, and scoped in the write itself rather than by a read-then-write:
   // `updateMany` with the orgId in the predicate cannot be raced into touching
   // another tenant's project between the check and the update.
@@ -262,6 +272,12 @@ export async function updateProjectImagery(
     data: { heroImageUrl: input.heroImageUrl }
   })
   if (result.count === 0) throw new ServiceError('Project not found', 'NOT_FOUND')
+
+  // After the write, never before it: a stored image is deleted only once the
+  // row that pointed at it has stopped doing so. A no-op when the value did not
+  // change, and a no-op for any URL that is not this org's own blob — a pasted
+  // external link belongs to somebody else and is left alone.
+  await deleteReplacedBlobs([before?.heroImageUrl], [input.heroImageUrl], actor.orgId)
 }
 
 export async function listProjects(actor: SessionActor) {

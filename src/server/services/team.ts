@@ -7,6 +7,7 @@ import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { constraintTargetIncludes } from '@/server/services/units'
 import { ImageUrlField } from '@/server/services/media'
+import { deleteReplacedBlobs } from '@/server/media/blob'
 
 export const CreateAgentSchema = z.object({
   fullName: z.string().trim().min(2, 'Name is required').max(120),
@@ -150,10 +151,20 @@ export async function updateOrganizationLogo(
   assertRole(actor, ['ADMIN'])
   // Keyed by the session's orgId, never by anything a form sent — there is no
   // parameter here that could point at another tenant.
+  const before = await prisma.organization.findUnique({
+    where: { id: actor.orgId },
+    select: { logoUrl: true }
+  })
+
   await prisma.organization.update({
     where: { id: actor.orgId },
     data: { logoUrl: input.logoUrl }
   })
+
+  // The replaced mark, deleted only once the row has stopped pointing at it,
+  // and only if it was this org's own upload. A logo an admin pasted from their
+  // corporate site is somebody else's asset and is never touched.
+  await deleteReplacedBlobs([before?.logoUrl], [input.logoUrl], actor.orgId)
 }
 
 export async function deactivateAgent(actor: SessionActor, userId: string) {

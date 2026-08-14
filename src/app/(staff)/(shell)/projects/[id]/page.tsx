@@ -64,7 +64,11 @@ export default async function ProjectPage({ params }: { params: { id: string } }
         {/* ADMIN only, and the only project-edit surface in the app — see
             HeroImageForm for why it is one field rather than a settings page. */}
         {actor.role === 'ADMIN' ? (
-          <HeroImageForm projectId={project.id} heroImageUrl={project.heroImageUrl} />
+          <HeroImageForm
+            projectId={project.id}
+            heroImageUrl={project.heroImageUrl}
+            projectName={project.name}
+          />
         ) : null}
       </div>
 

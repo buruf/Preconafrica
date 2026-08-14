@@ -4,6 +4,7 @@ import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { ImageUrlField, RenderUrlsField } from '@/server/services/media'
+import { deleteReplacedBlobs } from '@/server/media/blob'
 import { toMinor } from '@/domain/currency'
 import type { InstallmentFeeMode } from '@/domain/schedule'
 
@@ -184,8 +185,9 @@ export async function updateUnit(
     }
   }
 
+  let updated
   try {
-    return await prisma.unit.update({ where: { id: unitId }, data })
+    updated = await prisma.unit.update({ where: { id: unitId }, data })
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -196,6 +198,20 @@ export async function updateUnit(
     }
     throw error
   }
+
+  // Only once the row no longer points at them. Both fields are swept in one
+  // call, and the comparison is by *set* rather than by position — an admin who
+  // removes the middle render of three leaves two URLs that must survive, and
+  // pairing them up by index would delete the wrong one. Anything that is not
+  // this org's own blob (a pasted external link, another tenant's blob) is left
+  // alone; see `deleteReplacedBlobs`.
+  await deleteReplacedBlobs(
+    [unit.layoutImageUrl, ...unit.renderImageUrls],
+    [updated.layoutImageUrl, ...updated.renderImageUrls],
+    actor.orgId
+  )
+
+  return updated
 }
 
 /**
