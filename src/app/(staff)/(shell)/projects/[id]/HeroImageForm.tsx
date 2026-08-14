@@ -2,7 +2,8 @@
 
 import { useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, ErrorText, Field } from '@/components/ui'
+import { Button, ErrorText } from '@/components/ui'
+import { ImagePicker } from '@/components/ImagePicker'
 import { updateProjectImageryAction } from '../actions'
 
 function Submit() {
@@ -17,19 +18,26 @@ function Submit() {
 /**
  * The smallest honest project-edit surface: one field, one action, folded under
  * the banner it changes. There is no project settings page in this app, and
- * inventing one to hold a single URL would be the wrong size of change — but
+ * inventing one to hold a single image would be the wrong size of change — but
  * without any edit path at all, only projects created after today could ever
  * have a photo.
  *
  * Collapsed by default so the inventory (which is what staff came here for) is
  * not pushed down the page by a form nobody opens twice.
+ *
+ * The field is now `ImagePicker`: a developer standing in front of the building
+ * picks the photo off their phone. The pasted-link box is still there, one tap
+ * away, and the action, the schema and the column are untouched — what the form
+ * submits is the same single URL string it always did.
  */
 export function HeroImageForm({
   projectId,
-  heroImageUrl
+  heroImageUrl,
+  projectName
 }: {
   projectId: string
   heroImageUrl: string | null
+  projectName: string
 }) {
   const [open, setOpen] = useState(false)
   const [error, formAction] = useFormState(
@@ -52,13 +60,15 @@ export function HeroImageForm({
         <form action={formAction} className="mt-2 space-y-3">
           <ErrorText>{error}</ErrorText>
 
-          <Field
-            label="Building photo URL"
+          <ImagePicker
             name="heroImageUrl"
-            type="url"
-            defaultValue={heroImageUrl ?? ''}
-            placeholder="https://…/sunrise-heights.jpg"
-            hint="An https link to a PNG or JPEG. Leave it empty and save to remove the photo."
+            label="Building photo"
+            previewAlt={`${projectName} building photo`}
+            uploadKind="building"
+            previewKind="building"
+            initialUrl={heroImageUrl}
+            projectId={projectId}
+            hint="A PNG, JPEG or WebP from your phone or computer. Remove it and save to clear the photo."
           />
 
           <Submit />

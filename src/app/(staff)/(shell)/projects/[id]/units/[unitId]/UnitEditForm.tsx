@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
 import { Button, Card, ErrorText, Field } from '@/components/ui'
+import { ImagePicker, ImagePickerList } from '@/components/ImagePicker'
 import { MAX_RENDER_IMAGES } from '@/domain/media'
 import { updateUnitAction } from '../../../actions'
 
@@ -11,10 +12,16 @@ import { updateUnitAction } from '../../../actions'
  *
  * It is the same six fields against the same action; what changed is where it
  * lives. Inside a list row it had to be collapsible or fifty units meant fifty
- * forms, and the two URL fields — the ones that put a floor plan and renders on
- * the buyer's dashboard — were the least discoverable controls in the app. On
+ * forms, and the two imagery fields — the ones that put a floor plan and renders
+ * on the buyer's dashboard — were the least discoverable controls in the app. On
  * the unit's own screen there is exactly one form, directly under the imagery it
  * changes.
+ *
+ * Those two are now file pickers rather than URL boxes: an admin exporting plans
+ * out of a drawing package picks the files. A pasted link is still accepted,
+ * folded under each control, and the action and the schemas behind them are
+ * untouched — one string for the plan, one newline-separated string for the
+ * renders, exactly as before.
  *
  * Still collapsed by default, for a different reason: staff open this screen to
  * sell a unit far more often than to reprice one, and the primary action should
@@ -78,36 +85,38 @@ export function UnitEditForm({
             <Field label="Price" name="price" defaultValue={unit.priceInput} />
           </div>
 
-          <Field
-            label="Layout (floor plan) URL"
+          {/* The floor plan has its own encoding profile on the server — a
+              larger pixel cap and PNG first — because it is the one image here
+              made of thin lines and small room labels a buyer has to read. */}
+          <ImagePicker
             name="layoutImageUrl"
-            type="url"
-            defaultValue={unit.layoutImageUrl ?? ''}
-            placeholder="https://…/unit-3b-plan.png"
-            hint="An https link to a PNG or JPEG. Empty removes it."
+            label="Layout (floor plan)"
+            previewAlt={`Floor plan for unit ${unit.name}`}
+            uploadKind="layout"
+            previewKind="layout"
+            previewClassName="object-contain"
+            initialUrl={unit.layoutImageUrl}
+            projectId={projectId}
+            unitId={unit.id}
+            pickLabel="Choose a floor plan"
+            hint="A PNG, JPEG or WebP export of the plan. Remove it and save to clear it."
           />
 
-          {/* A textarea, one URL per line: several renders per unit, entered the
-              way anyone would paste them out of a folder listing or a
-              spreadsheet column. `parseRenderUrls` trims, drops blank lines,
-              de-duplicates and refuses the whole submission if any line is not a
-              usable https URL — named by line number, because "one of these is
-              wrong" is not an actionable error. */}
-          <Field
-            label="Render URLs"
+          {/* Several renders per unit, picked in one go, in the order they were
+              picked, each removable on its own. The value submitted is still the
+              newline-separated string `parseRenderUrls` has always parsed — it
+              trims, drops blanks, de-duplicates and enforces the cap on the
+              server, however the URLs got into the field. */}
+          <ImagePickerList
             name="renderImageUrls"
-            hint={`One https URL per line, up to ${MAX_RENDER_IMAGES}. Empty removes them all.`}
-          >
-            <textarea
-              name="renderImageUrls"
-              rows={3}
-              defaultValue={unit.renderImageUrls.join('\n')}
-              placeholder={'https://…/living.jpg\nhttps://…/kitchen.jpg'}
-              // text-base for the same reason `Field`'s input uses it: anything
-              // under 16px makes iOS Safari zoom the page on focus.
-              className="w-full rounded-btn border border-line bg-surface p-3 font-mono text-base text-ink outline-none placeholder:text-muted focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
-            />
-          </Field>
+            label="Renders"
+            max={MAX_RENDER_IMAGES}
+            initialUrls={unit.renderImageUrls}
+            projectId={projectId}
+            unitId={unit.id}
+            altPrefix={`Artist's impression of unit ${unit.name}`}
+            hint={`Up to ${MAX_RENDER_IMAGES}. Remove them all and save to clear the gallery.`}
+          />
 
           <SaveButton />
         </form>

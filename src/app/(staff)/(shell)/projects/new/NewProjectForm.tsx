@@ -49,12 +49,20 @@ export function NewProjectForm() {
 
           <Field label="Expected completion" name="expectedCompletion" type="date" required />
 
+          {/* The one imagery field in the app that is still paste-only, and
+              deliberately: a stored image lives at
+              `org/{orgId}/project/{projectId}/…`, and this project has no id
+              until the form is submitted. Uploading first would mean either an
+              unscoped path or a blob orphaned by every abandoned draft. So the
+              photo is uploaded from the project's own page a moment later, which
+              is also where an admin can see what they picked against the
+              inventory it heads. */}
           <Field
             label="Building photo URL"
             name="heroImageUrl"
             type="url"
             placeholder="https://…/sunrise-heights.jpg"
-            hint="Optional — an https link to a photo or render of the building. It heads the inventory page and the buyer's statement, and can be added later from that page."
+            hint="Optional — an https link to a photo or render of the building. To upload one from your phone or computer instead, create the project and use “Add a building photo” on its page."
           />
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
