@@ -1,5 +1,6 @@
 import { lookup } from 'node:dns/promises'
 import { checkImageUrl, isBlockedAddress } from '@/domain/media'
+import { sniffImageFormat } from '@/domain/uploads'
 
 /**
  * The only way this server fetches an image URL a user supplied.
@@ -225,11 +226,6 @@ export async function fetchGuardedImages<K extends string>(
   >
 }
 
-/** The PNG eight-byte signature, per the spec's §5.2. */
-const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-/** SOI plus the first marker byte of the segment that always follows it. */
-const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff])
-
 /**
  * What format these bytes actually are — read from the bytes, not from the
  * header the host sent.
@@ -243,13 +239,18 @@ const JPEG_MAGIC = Buffer.from([0xff, 0xd8, 0xff])
  * mislabels a genuine JPEG as `image/png` embeds correctly, which is the other
  * half of the point: the bytes are the truth either way.
  *
- * Two signatures and no more. Anything else — WebP, AVIF, TIFF, HTML, a
- * zero-padded buffer — is not embeddable, and null means "print the
- * placeholder".
+ * The signatures themselves live in `@/domain/uploads` — one sniffer for the
+ * whole codebase, shared with the upload path, because "what counts as a PNG"
+ * written down twice is one place for two answers to drift apart. What stays
+ * local here is the *narrowing*: `sniffImageFormat` also recognises WebP, and
+ * WebP maps to null because no PDF renderer in this app decodes it. Anything
+ * else — AVIF, TIFF, HTML, a zero-padded buffer — is not embeddable either, and
+ * null means "print the placeholder".
  */
 function sniffPdfImageFormat(bytes: Buffer): PdfImage['format'] | null {
-  if (bytes.subarray(0, PNG_MAGIC.length).equals(PNG_MAGIC)) return 'png'
-  if (bytes.subarray(0, JPEG_MAGIC.length).equals(JPEG_MAGIC)) return 'jpg'
+  const format = sniffImageFormat(bytes)
+  if (format === 'png') return 'png'
+  if (format === 'jpeg') return 'jpg'
   return null
 }
 
