@@ -3,6 +3,7 @@ import {
   UNIT_PATTERN_PRESETS,
   UnitPatternError,
   columnLetters,
+  firstFloorUnitNames,
   generateUnitNames
 } from '@/domain/units'
 
@@ -137,5 +138,50 @@ describe('generateUnitNames', () => {
       expect(result).toHaveLength(96)
       expect(new Set(result).size).toBe(96)
     }
+  })
+})
+
+describe('firstFloorUnitNames', () => {
+  // What the new-project form shows beside each unit-position row, so an admin
+  // filling in four rows never has to guess whether row 3 is the C unit or D.
+
+  it('names the positions on the first floor, in order', () => {
+    expect(
+      firstFloorUnitNames({ unitsPerFloor: 4, pattern: '{letter}{floor}{index:02}', startFloor: 1 })
+    ).toEqual(['A101', 'B102', 'C103', 'D104'])
+  })
+
+  it('follows the start floor', () => {
+    expect(
+      firstFloorUnitNames({ unitsPerFloor: 4, pattern: '{letter}{floor}{index:02}', startFloor: 16 })
+    ).toEqual(['A1601', 'B1602', 'C1603', 'D1604'])
+  })
+
+  it('agrees with what generateUnitNames will actually produce', () => {
+    // The preview and the generator must never disagree — that is the whole
+    // point of it being the same function over one floor.
+    const input = { unitsPerFloor: 6, pattern: '{floor}{letter}', startFloor: 3 }
+    const generated = generateUnitNames({ ...input, floors: 4 })
+      .filter((unit) => unit.floor === 3)
+      .map((unit) => unit.name)
+
+    expect(firstFloorUnitNames(input)).toEqual(generated)
+  })
+
+  it('previews every preset', () => {
+    for (const preset of UNIT_PATTERN_PRESETS) {
+      expect(
+        firstFloorUnitNames({ unitsPerFloor: 4, pattern: preset.pattern, startFloor: 1 }),
+        preset.pattern
+      ).toHaveLength(4)
+    }
+  })
+
+  it('returns nothing rather than throwing on a pattern it cannot use', () => {
+    // It renders live beside a form; a caption is not worth crashing a form
+    // over. The real validation still happens on submit.
+    expect(firstFloorUnitNames({ unitsPerFloor: 4, pattern: 'Flat {block}', startFloor: 1 })).toEqual([])
+    expect(firstFloorUnitNames({ unitsPerFloor: 0, pattern: '{floor}{letter}', startFloor: 1 })).toEqual([])
+    expect(firstFloorUnitNames({ unitsPerFloor: 4, pattern: '', startFloor: 1 })).toEqual([])
   })
 })

@@ -25,8 +25,33 @@ export const UNIT_PATTERN_PRESETS: ReadonlyArray<{
 }> = Object.freeze([
   { label: 'Numbered (401, 402)', pattern: '{floor}{index:02}', example: '401' },
   { label: 'Lettered (4A, 4B)', pattern: '{floor}{letter}', example: '4A' },
+  // The owner's own building, Khaleel Suites, is numbered this way: the
+  // position's letter leads, then the floor, then the position again as a
+  // padded count — A101, B102, C103, D104 across floor 1. A common East
+  // African convention, and no existing preset could express it.
+  {
+    label: 'Lettered + numbered (A101, B102)',
+    pattern: '{letter}{floor}{index:02}',
+    example: 'A101'
+  },
   { label: 'Named (Unit 4-1)', pattern: 'Unit {floor}-{index}', example: 'Unit 4-1' }
 ])
+
+/**
+ * The three repeated form fields that carry one row per unit position.
+ *
+ * Here rather than beside the schema in `server/services/projects.ts` for one
+ * reason: the form that writes these names is a client component, and it must
+ * not import a module that pulls in Prisma and the session stack just to learn
+ * three strings. The domain is the one place both sides can see, and a unit
+ * position is a unit-generation concept — row *i* is `indexOnFloor` *i*, which
+ * is exactly what `generateUnitNames` numbers.
+ */
+export const UNIT_TYPE_FIELDS = {
+  bedrooms: 'unitTypeBedrooms',
+  sizeSqm: 'unitTypeSizeSqm',
+  price: 'unitTypePrice'
+} as const
 
 const TOKEN = /\{([a-zA-Z]+)(?::(\d+))?\}/g
 const KNOWN_TOKENS = new Set(['floor', 'index', 'letter'])
@@ -118,4 +143,40 @@ export function generateUnitNames(input: UnitNameInput): GeneratedUnit[] {
   }
 
   return units
+}
+
+/**
+ * The names positions 1..unitsPerFloor will carry on the *first* floor.
+ *
+ * This exists for one screen: the new-project form now takes a row of
+ * bedrooms/size/price per unit position, and an admin filling in four rows has
+ * no way to know whether row 3 is the C unit or the D unit without being shown.
+ * Row *i* maps to `indexOnFloor` *i*, which is exactly what `generateUnitNames`
+ * numbers, so the preview is the real generator run over a single floor rather
+ * than a second, driftable implementation of the same rule.
+ *
+ * Never throws. It renders live beside a form whose pattern and start floor can
+ * be mid-edit, and a preview label is not worth crashing a form over — an
+ * unusable pattern comes back as an empty list and the rows simply lose their
+ * captions. The pattern is still validated for real by `CreateProjectSchema`
+ * and again by `createProject`.
+ *
+ * `floors: 1` deliberately relaxes the cross-floor {floor}-token requirement:
+ * one floor cannot collide with another, and this is a preview of one floor.
+ */
+export function firstFloorUnitNames(input: {
+  unitsPerFloor: number
+  pattern: string
+  startFloor: number
+}): string[] {
+  try {
+    return generateUnitNames({
+      floors: 1,
+      unitsPerFloor: input.unitsPerFloor,
+      pattern: input.pattern,
+      startFloor: input.startFloor
+    }).map((unit) => unit.name)
+  } catch {
+    return []
+  }
 }
