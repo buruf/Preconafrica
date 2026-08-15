@@ -1,5 +1,6 @@
 'use server'
 
+import type { ZodError } from 'zod'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 import { requireAdmin, requireStaff } from '@/server/session'
@@ -7,18 +8,44 @@ import {
   CreateProjectSchema,
   UpdateProjectImagerySchema,
   createProject,
+  unitTypeRowsFrom,
   updateProjectImagery
 } from '@/server/services/projects'
 import { UpdateUnitSchema, updateUnit } from '@/server/services/units'
 import { imageFieldFrom } from '@/server/services/media'
 import { ServiceError } from '@/server/services/errors'
 
+/**
+ * The first problem, said in a way that names the row it came from.
+ *
+ * The form shows one message, so on a form with eight unit positions on it
+ * "Invalid size" is nearly useless on its own. Every unit-position issue —
+ * zod's own and the currency-aware price check in the schema's superRefine
+ * alike — carries `['unitTypes', index, …]`, so the prefix is added here in one
+ * place rather than being baked into each message.
+ */
+function firstMessage(error: ZodError): string {
+  const issue = error.issues[0]
+  if (!issue) return 'Please check the form and try again.'
+
+  const [field, index] = issue.path
+  if (field === 'unitTypes' && typeof index === 'number') {
+    return `Unit position ${index + 1}: ${issue.message}`
+  }
+  return issue.message
+}
+
 export async function createProjectAction(_prev: string | undefined, formData: FormData) {
   const actor = await requireStaff()
-  const parsed = CreateProjectSchema.safeParse(Object.fromEntries(formData))
+  const parsed = CreateProjectSchema.safeParse({
+    ...Object.fromEntries(formData),
+    // Last, so it wins over the flattened single value `Object.fromEntries`
+    // leaves behind for each repeated row field.
+    unitTypes: unitTypeRowsFrom(formData)
+  })
 
   if (!parsed.success) {
-    return parsed.error.issues[0]?.message ?? 'Please check the form and try again.'
+    return firstMessage(parsed.error)
   }
 
   let projectId: string
