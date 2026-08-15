@@ -10,7 +10,10 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "db:push": "prisma db push",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "predev": "node scripts/which-db.mjs",
+    "predb:push": "node scripts/which-db.mjs",
+    "db:which": "node scripts/which-db.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
