@@ -3,7 +3,7 @@ import { prisma } from '@/server/db'
 import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { isSupportedCurrency, toMinor } from '@/domain/currency'
-import { generateUnitNames, UnitPatternError } from '@/domain/units'
+import { UNIT_TYPE_FIELDS, generateUnitNames, UnitPatternError } from '@/domain/units'
 import { percentToBps } from '@/domain/schedule'
 import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
 import { ImageUrlField } from '@/server/services/media'
@@ -14,6 +14,68 @@ const MAX_UNITS = 2000
 /** Validates that a major-unit string is parseable in the chosen currency. */
 function moneyString(field: string) {
   return z.string().min(1, `${field} is required`)
+}
+
+/**
+ * One unit position on a floor: its bedrooms, its size and its price.
+ *
+ * Real buildings are not one repeated flat. The owner's own — Khaleel Suites —
+ * has four positions per floor and three distinct types among them (4-bed
+ * 245m², 4-bed 245m², 4-bed 240m², 3-bed 210m²); other buildings have eight or
+ * more, mixing 1-bed through 4-bed. The single `defaultBedrooms` /
+ * `defaultSizeSqm` / `defaultPrice` triple this replaces could express none of
+ * it, and the seed only worked around the gap with an `(indexOnFloor % 3) + 1`
+ * hack.
+ *
+ * Deliberately *not* a `UnitType` table. These values are a generation-time
+ * input and nothing more: `createProject` reads row *i* to stamp the unit at
+ * `indexOnFloor` *i* on every floor, and from that moment each unit is edited
+ * on its own page exactly as before. A table would give a lifetime — and raise
+ * the question of what happens to already-generated units when a "type" is
+ * edited — to something that has no lifetime at all. So: no schema change.
+ */
+export const UnitTypeRowSchema = z.object({
+  bedrooms: z.coerce.number().int().min(0).max(10),
+  sizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE),
+  price: moneyString('Price')
+})
+
+export type UnitTypeRow = z.infer<typeof UnitTypeRowSchema>
+
+/**
+ * The posted rows, read out of those three repeated fields.
+ *
+ * `Object.fromEntries(formData)` — what the action uses for every other field —
+ * keeps only the last value of a repeated name, so the rows have to be read
+ * with `getAll` and zipped back together here.
+ *
+ * The row count is the *longest* of the three lists, not the shortest: a ragged
+ * post (a row whose price input never arrived) then produces a row with a blank
+ * that fails validation against its own position, rather than silently pairing
+ * position 4's bedrooms with position 5's price.
+ */
+export function unitTypeRowsFrom(formData: FormData): Array<Record<string, string>> {
+  const bedrooms = formData.getAll(UNIT_TYPE_FIELDS.bedrooms)
+  const sizes = formData.getAll(UNIT_TYPE_FIELDS.sizeSqm)
+  const prices = formData.getAll(UNIT_TYPE_FIELDS.price)
+  const count = Math.max(bedrooms.length, sizes.length, prices.length)
+
+  return Array.from({ length: count }, (_unused, index) => ({
+    bedrooms: String(bedrooms[index] ?? ''),
+    sizeSqm: String(sizes[index] ?? ''),
+    price: String(prices[index] ?? '')
+  }))
+}
+
+/** One wording for a row-count mismatch, shared by the schema and the service. */
+function unitTypeCountMessage(submitted: number, unitsPerFloor: number): string {
+  const plural = unitsPerFloor === 1 ? '' : 's'
+  return (
+    `This project has ${unitsPerFloor} unit${plural} per floor, so it needs ` +
+    `${unitsPerFloor} unit position${plural} — ${submitted} ` +
+    `${submitted === 1 ? 'was' : 'were'} submitted. ` +
+    'Set “Units / floor” and the list of positions to the same number.'
+  )
 }
 
 export const CreateProjectSchema = z
@@ -31,9 +93,14 @@ export const CreateProjectSchema = z
     // omits the field entirely still parses (the field parses '' to null), which
     // keeps every existing caller and test working unchanged.
     heroImageUrl: ImageUrlField.default(''),
-    defaultBedrooms: z.coerce.number().int().min(0).max(10),
-    defaultSizeSqm: z.string().regex(SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE),
-    defaultPrice: moneyString('Price'),
+    /**
+     * One row per unit position, in `indexOnFloor` order — row 1 is the unit
+     * `generateUnitNames` numbers 1 on every floor (the A / 01 unit), row 2 the
+     * B / 02 one, and so on. The length must equal `unitsPerFloor`; that is
+     * checked in the superRefine below, because it is a rule about two fields
+     * rather than about this one.
+     */
+    unitTypes: z.array(UnitTypeRowSchema).min(1, 'Add at least one unit position').max(100),
     // How this project charges for paying by installments. PERCENT is the
     // default because it is what most markets use; FIXED exists because a
     // percentage of the financed amount is interest, and interest is not
@@ -75,16 +142,32 @@ export const CreateProjectSchema = z
       })
     }
 
-    // Currency-aware price validation: '100.50' is valid NGN but invalid RWF.
-    try {
-      toMinor(value.defaultPrice, value.currency)
-    } catch (error) {
+    // The rows are what the building is made of, so one row per position and
+    // no fewer. A mismatch is refused outright rather than truncated or padded:
+    // a project generated from four rows when the admin meant eight is a wrong
+    // building that looks right, and it is 64 units too late to notice.
+    if (value.unitTypes.length !== value.unitsPerFloor) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['defaultPrice'],
-        message: error instanceof Error ? error.message : 'Invalid price'
+        path: ['unitTypes'],
+        message: unitTypeCountMessage(value.unitTypes.length, value.unitsPerFloor)
       })
     }
+
+    // Currency-aware price validation, per position: '100.50' is valid NGN but
+    // invalid RWF. The issue is raised against its own row, so the form can say
+    // which position is wrong instead of pointing at the first one.
+    value.unitTypes.forEach((row, index) => {
+      try {
+        toMinor(row.price, value.currency)
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['unitTypes', index, 'price'],
+          message: error instanceof Error ? error.message : 'Invalid price'
+        })
+      }
+    })
 
     // Only the field the chosen mode actually uses is validated. The other is
     // carried at whatever the form left in it and stored as its zero, so a
@@ -153,6 +236,17 @@ export type CreateProjectInput = z.infer<typeof CreateProjectSchema>
 export async function createProject(actor: SessionActor, input: CreateProjectInput) {
   assertRole(actor, ['ADMIN'])
 
+  // Re-checked here as well as in the schema, and for the same reason the
+  // naming pattern is: the service is a callable entry point in its own right
+  // (the seed, a script, a future import), and "one row per position" is a rule
+  // about the building, not about the form that happened to describe it.
+  if (input.unitTypes.length !== input.unitsPerFloor) {
+    throw new ServiceError(
+      unitTypeCountMessage(input.unitTypes.length, input.unitsPerFloor),
+      'VALIDATION'
+    )
+  }
+
   let drafts: ReturnType<typeof generateUnitNames>
   try {
     drafts = generateUnitNames({
@@ -168,7 +262,24 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
     throw error
   }
 
-  const priceMinor = toMinor(input.defaultPrice, input.currency)
+  // Every row converted up front, before a single row is written: a project
+  // that got as far as inserting units and then failed on position 7's price
+  // would be rolled back by the transaction anyway, but there is no reason to
+  // open one to discover it.
+  const positions = input.unitTypes.map((row, index) => {
+    try {
+      return {
+        bedrooms: row.bedrooms,
+        sizeSqm: row.sizeSqm,
+        priceMinor: toMinor(row.price, input.currency)
+      }
+    } catch (error) {
+      throw new ServiceError(
+        `Unit position ${index + 1}: ${error instanceof Error ? error.message : 'Invalid price'}`,
+        'VALIDATION'
+      )
+    }
+  })
 
   // The inactive mode's column is stored as its zero rather than as whatever
   // the form happened to carry, so a project's live charge is unambiguous from
@@ -218,14 +329,23 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
     })
 
     await tx.unit.createMany({
-      data: drafts.map((draft) => ({
-        projectId: created.id,
-        name: draft.name,
-        floor: draft.floor,
-        bedrooms: input.defaultBedrooms,
-        sizeSqm: input.defaultSizeSqm,
-        priceMinor
-      }))
+      // Row *i* applies to `indexOnFloor` *i* on every floor. That is the whole
+      // mechanism: `generateUnitNames` already numbers each unit's position
+      // within its floor, so the positions line up with the names it produced
+      // without this having to know anything about the naming pattern. The
+      // index is 1-based there and 0-based here; the length check above is what
+      // makes the lookup total.
+      data: drafts.map((draft) => {
+        const position = positions[draft.indexOnFloor - 1]
+        return {
+          projectId: created.id,
+          name: draft.name,
+          floor: draft.floor,
+          bedrooms: position.bedrooms,
+          sizeSqm: position.sizeSqm,
+          priceMinor: position.priceMinor
+        }
+      })
     })
 
     return created

@@ -189,6 +189,7 @@ export function Select({
   defaultValue,
   required,
   disabled,
+  onChange,
   className = ''
 }: {
   name: string
@@ -196,6 +197,13 @@ export function Select({
   defaultValue?: string
   required?: boolean
   disabled?: boolean
+  /**
+   * Optional, and the select stays uncontrolled with or without it — the one
+   * caller that passes it (the new-project form's naming pattern) only wants to
+   * mirror the chosen value into state so it can redraw the unit-name preview.
+   * Without JavaScript nothing is listening, and the select still posts.
+   */
+  onChange?: React.ChangeEventHandler<HTMLSelectElement>
   className?: string
 }) {
   return (
@@ -204,6 +212,7 @@ export function Select({
       defaultValue={defaultValue}
       required={required}
       disabled={disabled}
+      onChange={onChange}
       className={`${CONTROL_CLASS} ${className}`}
     >
       {children}
@@ -219,6 +228,7 @@ export function Field({
   defaultValue,
   placeholder,
   hint,
+  onChange,
   children
 }: {
   /** Usually a string; a node when the row carries a control, e.g. a
@@ -230,6 +240,13 @@ export function Field({
   defaultValue?: string | number
   placeholder?: string
   hint?: string
+  /**
+   * Optional, and the input stays uncontrolled either way — same contract as
+   * `Select`'s. The new-project form uses it to follow "Units / floor" and
+   * "First floor no." so the unit-position rows and their name previews can
+   * keep up with what has been typed.
+   */
+  onChange?: React.ChangeEventHandler<HTMLInputElement>
   children?: ReactNode
 }) {
   return (
@@ -245,6 +262,7 @@ export function Field({
           required={required}
           defaultValue={defaultValue}
           placeholder={placeholder}
+          onChange={onChange}
           className={CONTROL_CLASS}
         />
       )}

@@ -146,11 +146,41 @@ async function main() {
     }
   })
 
+  /** One unit position on a floor — the same shape the new-project form takes. */
+  interface SeedUnitPosition {
+    bedrooms: number
+    sizeSqm: number
+    priceMajor: string
+  }
+
+  /**
+   * Generates a project's units from an explicit type per position.
+   *
+   * This used to compute `bedrooms` as `(draft.indexOnFloor % 3) + 1` — a
+   * workaround for a form that could only stamp one bedroom count, one size and
+   * one price onto every unit in a building. The form now takes a row per
+   * position, so the seed states the positions instead of deriving them from a
+   * modulus, and it is possible to read off which unit is which. The mapping
+   * itself is unchanged (position 1 -> 2 bed, 2 -> 3 bed, 3 -> 1 bed, then
+   * repeating), so every hand-picked payment amount in the fixtures below still
+   * lines up with the schedule its unit's price generates.
+   *
+   * Row *i* applies to `indexOnFloor` *i* on every floor, exactly as
+   * `createProject` does it.
+   */
   async function createUnits(
     project: { id: string; floors: number; unitsPerFloor: number; namingPattern: string; startFloor: number },
     currency: string,
-    priceByBedrooms: Record<number, string>
+    positions: SeedUnitPosition[]
   ) {
+    // The same rule the schema and the service both enforce, so a seed edited
+    // to eight units a floor fails here rather than generating half a building.
+    if (positions.length !== project.unitsPerFloor) {
+      throw new Error(
+        `Seed: ${positions.length} unit positions given for a project with ${project.unitsPerFloor} units per floor.`
+      )
+    }
+
     const drafts = generateUnitNames({
       floors: project.floors,
       unitsPerFloor: project.unitsPerFloor,
@@ -160,27 +190,48 @@ async function main() {
 
     await prisma.unit.createMany({
       data: drafts.map((draft) => {
-        // Cycle of 3: indexOnFloor 1 -> 2 bedrooms, 2 -> 3 bedrooms, 3 -> 1
-        // bedroom, then repeats (4 -> 2, 5 -> 3, 6 -> 1, ...). This is the
-        // single source of truth for which unit name gets which bedroom
-        // count and therefore which price — get a unit name's bedroom count
-        // wrong here and every hand-picked payment amount for it stops
-        // lining up with the generated schedule.
-        const bedrooms = (draft.indexOnFloor % 3) + 1
+        const position = positions[draft.indexOnFloor - 1]
         return {
           projectId: project.id,
           name: draft.name,
           floor: draft.floor,
-          bedrooms,
-          sizeSqm: bedrooms * 45,
-          priceMinor: toMinor(priceByBedrooms[bedrooms], currency)
+          bedrooms: position.bedrooms,
+          sizeSqm: position.sizeSqm,
+          priceMinor: toMinor(position.priceMajor, currency)
         }
       })
     })
   }
 
-  await createUnits(lagos, 'NGN', { 1: '85000000', 2: '145000000', 3: '250000000' })
-  await createUnits(nairobi, 'KES', { 1: '7500000', 2: '11200000', 3: '18400000' })
+  // Six positions a floor, three types repeated twice — the mix these two demo
+  // buildings have always had, now said out loud. Sunrise Heights numbers its
+  // floors 101, 102, … so position 1 is unit ?01; Riverside Court letters them,
+  // so position 1 is unit ?A.
+  const TWO_BED_LAGOS: SeedUnitPosition = { bedrooms: 2, sizeSqm: 90, priceMajor: '145000000' }
+  const THREE_BED_LAGOS: SeedUnitPosition = { bedrooms: 3, sizeSqm: 135, priceMajor: '250000000' }
+  const ONE_BED_LAGOS: SeedUnitPosition = { bedrooms: 1, sizeSqm: 45, priceMajor: '85000000' }
+
+  const TWO_BED_NAIROBI: SeedUnitPosition = { bedrooms: 2, sizeSqm: 90, priceMajor: '11200000' }
+  const THREE_BED_NAIROBI: SeedUnitPosition = { bedrooms: 3, sizeSqm: 135, priceMajor: '18400000' }
+  const ONE_BED_NAIROBI: SeedUnitPosition = { bedrooms: 1, sizeSqm: 45, priceMajor: '7500000' }
+
+  await createUnits(lagos, 'NGN', [
+    TWO_BED_LAGOS, // ?01
+    THREE_BED_LAGOS, // ?02
+    ONE_BED_LAGOS, // ?03
+    TWO_BED_LAGOS, // ?04
+    THREE_BED_LAGOS, // ?05
+    ONE_BED_LAGOS // ?06
+  ])
+
+  await createUnits(nairobi, 'KES', [
+    TWO_BED_NAIROBI, // ?A
+    THREE_BED_NAIROBI, // ?B
+    ONE_BED_NAIROBI, // ?C
+    TWO_BED_NAIROBI, // ?D
+    THREE_BED_NAIROBI, // ?E
+    ONE_BED_NAIROBI // ?F
+  ])
 
   async function createBuyer(
     fullName: string,
@@ -387,7 +438,7 @@ async function main() {
   // payment lands on entry 0 with no special handling here.
 
   // 1. Full payment, settled. Nothing financed, so no deposit and no charge.
-  // Unit '101' is the deliberate choice: indexOnFloor 1 -> 2 bedrooms ->
+  // Unit '101' is the deliberate choice: position 1 -> 2 bedrooms ->
   // 145,000,000 NGN, which is exactly the payment amount below. Unit '102'
   // (3 bedrooms, 250,000,000 NGN) would leave this "settled" sale half paid.
   await createSale({
@@ -441,7 +492,7 @@ async function main() {
   })
 
   // 4. Several months in arrears, so the arrears report has content on day one.
-  // Unit '4C' (indexOnFloor 3 -> 1 bedroom, 7,500,000 KES). A 1,500,000 deposit
+  // Unit '4C' (position 3 -> 1 bedroom, 7,500,000 KES). A 1,500,000 deposit
   // finances 6,000,000; at Riverside Court's 10% the markup is 600,000, so the
   // installments amortize 6,600,000 -> 183,333.33 a month (x35, final
   // 183,333.45). Total owed is 8,100,000 = price 7,500,000 + markup 600,000.
