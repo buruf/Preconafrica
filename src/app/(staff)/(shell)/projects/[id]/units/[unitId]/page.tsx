@@ -93,6 +93,7 @@ export default async function UnitPage({
           while deciding is exactly what they see afterwards. */}
       <Card className="mb-4">
         <UnitImagery
+          unitId={unit.id}
           unitName={unit.name}
           projectName={project.name}
           layoutImageUrl={unit.layoutImageUrl}

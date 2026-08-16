@@ -175,6 +175,7 @@ export default async function StaffSalePage({ params }: { params: { id: string }
           looking at the same plan and renders the buyer has in front of them. */}
       <Card className="mb-6">
         <UnitImagery
+          unitId={sale.unit.id}
           unitName={sale.unit.name}
           projectName={sale.project.name}
           layoutImageUrl={sale.unit.layoutImageUrl}

@@ -180,3 +180,24 @@ export function firstFloorUnitNames(input: {
     return []
   }
 }
+
+/**
+ * What a unit's floor plan PDF is called once it lands in a buyer's downloads.
+ *
+ * Pure and here rather than beside the renderer because it is a rule about unit
+ * names, and because it is interpolated straight into a `Content-Disposition`
+ * header — which makes it a sanitiser, not a nicety. Unit names are
+ * developer-typed free text ("3B", "Penthouse 2"), and nothing stops one
+ * carrying a quote (which would close the header's quoted-string), a newline
+ * (which would split the header outright) or a path separator. Everything
+ * outside `[A-Za-z0-9]` collapses to a hyphen, runs collapse to one, and a name
+ * with no usable characters at all falls back to a fixed filename rather than
+ * producing `floor-plan-unit-.pdf`.
+ */
+export function floorPlanFilename(unitName: string): string {
+  const safe = unitName
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+  return safe ? `floor-plan-unit-${safe}.pdf` : 'floor-plan.pdf'
+}

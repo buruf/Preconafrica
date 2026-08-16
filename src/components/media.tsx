@@ -131,12 +131,22 @@ export function MediaImage({
  * rather than an absence they cannot notice.
  */
 export function UnitImagery({
+  unitId,
   unitName,
   projectName,
   layoutImageUrl,
   renderImageUrls,
   heading
 }: {
+  /**
+   * Only used to build the floor-plan link. Putting that link here rather than
+   * on each page is what puts it on every surface at once — the buyer's
+   * dashboard, the staff unit page, the staff sale page and both steps of the
+   * sell flow — with one wording and one tap target. Rendering the link grants
+   * nothing: the route re-authorizes, and a buyer who edits the id out of
+   * another buyer's URL gets a 404.
+   */
+  unitId: string
   unitName: string
   projectName: string
   layoutImageUrl: string | null
@@ -162,6 +172,19 @@ export function UnitImagery({
             alt={`Floor plan for ${subject}`}
             className="object-contain"
           />
+          {/* Offered whether or not a drawing is on file. The document renders
+              either way — with no drawing it is a valid PDF whose panel says so
+              — and a link that appears and disappears is worse than one that
+              always answers. Styled like the statement and receipt links, with
+              the same 44px tap target. A plain `<a>` rather than `next/link`:
+              this is a file, not a page, and prefetching it would render a PDF
+              server-side for every card that scrolls into view. */}
+          <a
+            href={`/api/units/${unitId}/floor-plan`}
+            className="mt-1.5 inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
+          >
+            Download floor plan (PDF)
+          </a>
         </div>
         <div>
           <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-muted">

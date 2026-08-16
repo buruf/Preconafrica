@@ -2,9 +2,10 @@ import zlib from 'node:zlib'
 import type { InvoiceProps } from '@/server/pdf/InvoiceDocument'
 import type { StatementProps } from '@/server/pdf/StatementDocument'
 import type { ReceiptProps } from '@/server/pdf/ReceiptDocument'
+import type { FloorPlanProps } from '@/server/pdf/FloorPlanDocument'
 
 /**
- * Fixtures for the three documents, plus enough of a PDF reader to assert
+ * Fixtures for the four documents, plus enough of a PDF reader to assert
  * against what actually came out — so the document tests render from local data
  * and never from the database. Not a `.test.ts`, so vitest imports this rather
  * than collecting it (see `include` in vitest.config).
@@ -215,4 +216,25 @@ export const RECEIPT: ReceiptProps = {
   balanceMinor: 15400000000n,
   voided: false,
   voidReason: null
+}
+
+/**
+ * The floor plan, which is the odd one out: no number, no buyer, no currency
+ * and — deliberately — no price anywhere in the props. See `FloorPlanDocument`.
+ *
+ * The size deliberately carries decimals, because "245.00" is the shape a
+ * `Decimal(10,2)` stringifies to and a naive "is there money on this page"
+ * assertion would trip over it.
+ */
+export const FLOOR_PLAN: FloorPlanProps = {
+  orgName: 'Sunrise Developments',
+  projectName: 'Riverside Court',
+  projectLocation: 'Riverside Drive, Nairobi',
+  expectedCompletion: new Date('2028-06-30T00:00:00Z'),
+  unitName: '4C',
+  floor: 4,
+  bedrooms: 3,
+  sizeSqm: '245.00',
+  logo: null,
+  plan: null
 }

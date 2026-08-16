@@ -208,6 +208,7 @@ export default async function ConfirmSalePage({
           before they commit rather than after. */}
       <Card className="mb-4">
         <UnitImagery
+          unitId={unit.id}
           unitName={unit.name}
           projectName={unit.project.name}
           layoutImageUrl={unit.layoutImageUrl}
