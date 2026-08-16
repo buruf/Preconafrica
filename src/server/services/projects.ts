@@ -8,6 +8,8 @@ import { percentToBps } from '@/domain/schedule'
 import { SIZE_SQM_PATTERN, SIZE_SQM_MESSAGE } from '@/server/services/units'
 import { ImageUrlField } from '@/server/services/media'
 import { deleteReplacedBlobs } from '@/server/media/blob'
+import { recordAudit } from '@/server/audit/record'
+import { diffValues, image } from '@/domain/audit'
 
 const MAX_UNITS = 2000
 
@@ -348,6 +350,25 @@ export async function createProject(actor: SessionActor, input: CreateProjectInp
       })
     })
 
+    // Inside the same transaction that generated the building. There is no
+    // diff — nothing existed a moment ago — so what the entry carries is the
+    // shape of what was created: the name, and how many units it put into
+    // inventory. The fee mode and rate are deliberately not spelled out here;
+    // they are what the project *is*, not a change to it, and the day one is
+    // re-rated `updateProjectImagery`'s sibling will diff them.
+    await recordAudit(tx, actor, {
+      action: 'project.created',
+      entityType: 'Project',
+      entityId: created.id,
+      entityLabel: created.name,
+      context: {
+        projectId: created.id,
+        projectName: created.name,
+        currency: created.currency,
+        unitCount: drafts.length
+      }
+    })
+
     return created
   })
 
@@ -381,17 +402,38 @@ export async function updateProjectImagery(
   // disappears between the two is caught by the count rather than missed.
   const before = await prisma.project.findFirst({
     where: { id: projectId, orgId: actor.orgId },
-    select: { heroImageUrl: true }
+    select: { name: true, heroImageUrl: true }
   })
 
-  // Org-scoped, and scoped in the write itself rather than by a read-then-write:
-  // `updateMany` with the orgId in the predicate cannot be raced into touching
-  // another tenant's project between the check and the update.
-  const result = await prisma.project.updateMany({
-    where: { id: projectId, orgId: actor.orgId },
-    data: { heroImageUrl: input.heroImageUrl }
+  await prisma.$transaction(async (tx) => {
+    // Org-scoped, and scoped in the write itself rather than by a
+    // read-then-write: `updateMany` with the orgId in the predicate cannot be
+    // raced into touching another tenant's project between the check and the
+    // update. Unchanged by the transaction around it — which exists only so the
+    // photo and the record of who set it land together.
+    const result = await tx.project.updateMany({
+      where: { id: projectId, orgId: actor.orgId },
+      data: { heroImageUrl: input.heroImageUrl }
+    })
+    // Thrown inside the transaction, which rolls it back — and there is nothing
+    // to roll back, because a count of zero means nothing was written.
+    if (result.count === 0) throw new ServiceError('Project not found', 'NOT_FOUND')
+
+    const changes = diffValues(
+      { heroImageUrl: image(before?.heroImageUrl) },
+      { heroImageUrl: image(input.heroImageUrl) }
+    )
+    if (changes.length > 0) {
+      await recordAudit(tx, actor, {
+        action: 'project.updated',
+        entityType: 'Project',
+        entityId: projectId,
+        entityLabel: before?.name ?? null,
+        changes,
+        context: { projectId, projectName: before?.name }
+      })
+    }
   })
-  if (result.count === 0) throw new ServiceError('Project not found', 'NOT_FOUND')
 
   // After the write, never before it: a stored image is deleted only once the
   // row that pointed at it has stopped doing so. A no-op when the value did not

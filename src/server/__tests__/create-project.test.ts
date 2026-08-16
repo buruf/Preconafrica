@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServiceError } from '@/server/services/errors'
 import type { SessionActor } from '@/server/session'
+import { auditRecorder } from './audit-fake'
 
 /**
  * What `createProject` does with the unit positions it is handed.
@@ -67,20 +68,28 @@ const KHALEEL_POSITIONS = [
   { bedrooms: 3, sizeSqm: '210.00', price: '15200000' }
 ]
 
+/** The audit entries the transaction under test wrote. Reset per test. */
+let audit = auditRecorder()
+
 beforeEach(() => {
   createdUnits = []
+  audit = auditRecorder()
   $transaction.mockReset()
   $transaction.mockImplementation(async (run: (tx: unknown) => Promise<unknown>) =>
     run({
       project: {
-        create: vi.fn(async () => ({ id: 'project_1' }))
+        // `name` and `currency` come back because the audit entry written in
+        // the same transaction reads them off the created row rather than off
+        // the input — the row is what actually landed.
+        create: vi.fn(async () => ({ id: 'project_1', name: 'Khaleel Suites', currency: 'KES' }))
       },
       unit: {
         createMany: vi.fn(async ({ data }: { data: UnitRow[] }) => {
           createdUnits = data
           return { count: data.length }
         })
-      }
+      },
+      auditEntry: audit.auditEntry
     })
   )
 })
@@ -218,5 +227,43 @@ describe('createProject — a position per unit', () => {
       )
     ).rejects.toThrow()
     expect($transaction).not.toHaveBeenCalled()
+  })
+})
+
+describe('createProject is audited', () => {
+  it('records who created it, and how much inventory it put on the books', async () => {
+    await createProject(admin, {
+      ...base,
+      floors: 16,
+      unitsPerFloor: 4,
+      unitTypes: KHALEEL_POSITIONS
+    })
+
+    const [entry] = audit.of('project.created')
+    expect(entry).toBeDefined()
+    expect(entry.actorUserId).toBe('user_1')
+    expect(entry.actorRole).toBe('ADMIN')
+    expect(entry.entityType).toBe('Project')
+    expect(entry.entityId).toBe('project_1')
+    expect(entry.entityLabel).toBe('Khaleel Suites')
+    expect(entry.context).toMatchObject({ unitCount: 64, currency: 'KES' })
+  })
+
+  it('records nothing when the project was refused', async () => {
+    const failure = await createProject(admin, {
+      ...base,
+      floors: 2,
+      unitsPerFloor: 4,
+      // Position 3's price is not a number, so the whole thing is refused
+      // before the transaction opens.
+      unitTypes: [
+        ...KHALEEL_POSITIONS.slice(0, 2),
+        { ...KHALEEL_POSITIONS[2], price: 'not-a-number' },
+        KHALEEL_POSITIONS[3]
+      ]
+    }).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(ServiceError)
+    expect(audit.entries).toHaveLength(0)
   })
 })

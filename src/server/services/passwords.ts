@@ -8,6 +8,7 @@ import {
   hashResetToken,
   isResetTokenUsable
 } from '@/domain/password-reset'
+import { recordAudit } from '@/server/audit/record'
 
 /**
  * One message for every way a reset link can fail — unknown, expired, already
@@ -183,7 +184,12 @@ export async function resetPassword(
       userId: true,
       expiresAt: true,
       usedAt: true,
-      user: { select: { disabledAt: true } }
+      // `orgId`, `fullName` and `role` are read for the audit entry only. A
+      // reset has no session, so the actor cannot come from one — it is the
+      // account the token belongs to, which this row already identifies. Three
+      // more columns on a lookup that was already happening; nothing about what
+      // this function accepts or refuses changes.
+      user: { select: { disabledAt: true, orgId: true, fullName: true, role: true } }
     }
   })
 
@@ -235,6 +241,32 @@ export async function resetPassword(
     if (written.count !== 1) {
       throw new ServiceError(INVALID_TOKEN_MESSAGE, 'VALIDATION')
     }
+
+    // Recorded after the write succeeded and inside the same transaction, so
+    // the log agrees with the password: a refused reset (spent token,
+    // deactivated account) has thrown above and leaves no entry, and a
+    // successful one cannot commit without this row.
+    //
+    // The actor is the account itself. Nobody else could have done this —
+    // holding the link is the whole proof — and attributing it to a person is
+    // what makes "who reset that password, and when" answerable. Nothing about
+    // the token, the link or the password is recorded: the entry says a reset
+    // happened, which is the fact worth keeping.
+    await recordAudit(
+      tx,
+      {
+        userId: token.userId,
+        orgId: token.user.orgId,
+        role: token.user.role,
+        fullName: token.user.fullName
+      },
+      {
+        action: 'user.password_reset',
+        entityType: 'User',
+        entityId: token.userId,
+        entityLabel: token.user.fullName
+      }
+    )
   })
 }
 
@@ -255,7 +287,10 @@ export async function changePassword(
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { passwordHash: true, disabledAt: true }
+    // The last three are for the audit entry — same reason as `resetPassword`
+    // above: this function is handed a user id, not a session, so the actor has
+    // to come from the row.
+    select: { passwordHash: true, disabledAt: true, orgId: true, fullName: true, role: true }
   })
   if (!user || user.disabledAt !== null) {
     throw new ServiceError('Account not found.', 'NOT_FOUND')
@@ -288,6 +323,20 @@ export async function changePassword(
       where: { userId, usedAt: null },
       data: { usedAt: now }
     })
+
+    // The actor is the user, because a self-service change is the one password
+    // operation that proves who did it — it required the current password. The
+    // entry records that it happened and nothing about either password.
+    await recordAudit(
+      tx,
+      { userId, orgId: user.orgId, role: user.role, fullName: user.fullName },
+      {
+        action: 'user.password_changed',
+        entityType: 'User',
+        entityId: userId,
+        entityLabel: user.fullName
+      }
+    )
   })
 }
 

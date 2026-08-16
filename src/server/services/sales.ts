@@ -23,6 +23,8 @@ import {
   type ScheduleInput
 } from '@/domain/schedule'
 import { deriveStatus, outstandingMinor } from '@/domain/status'
+import { recordAudit, type AuditActor } from '@/server/audit/record'
+import { enumValue } from '@/domain/audit'
 
 export { DEFAULT_TERM_MONTHS }
 
@@ -262,7 +264,19 @@ export function summariseSale(
 
 const DUPLICATE_EMAIL_MESSAGE = 'An account with that email already exists. Please sign in.'
 
-export async function registerBuyer(orgId: string, input: BuyerRegistrationInput) {
+/**
+ * Registers a buyer and the User account behind them.
+ *
+ * Takes an actor rather than the bare `orgId` it used to: the org is read off
+ * the actor exactly as before (its one caller was passing `actor.orgId`), and
+ * creating an account is a change to who can sign in, which is the third of the
+ * three things this log exists to record. Attribution matters here in
+ * particular — a buyer account is created *by staff*, on someone's behalf, and
+ * "who let this person in" is a question with an answer.
+ */
+export async function registerBuyer(actor: AuditActor, input: BuyerRegistrationInput) {
+  const orgId = actor.orgId
+
   // Cheap pre-check: gives the common case (no race) a clean answer without
   // burning a transaction. It is not sufficient on its own — two concurrent
   // registrations for the same email can both pass it, so the transaction
@@ -295,6 +309,17 @@ export async function registerBuyer(orgId: string, input: BuyerRegistrationInput
           email: input.email,
           address: input.address ?? null
         }
+      })
+
+      // In the same transaction as the account it describes, so an account can
+      // never exist without a record of who opened it. The entity is the User,
+      // not the Buyer: what was granted here is the ability to sign in.
+      await recordAudit(tx, actor, {
+        action: 'user.buyer_registered',
+        entityType: 'User',
+        entityId: user.id,
+        entityLabel: input.fullName,
+        context: { buyerName: input.fullName }
       })
 
       return { buyerId: buyer.id, userId: user.id }
@@ -479,6 +504,47 @@ export async function createSale(
         createdByUserId: actor.userId,
         scheduleEntries: { create: drafts }
       }
+    })
+
+    const auditContext = {
+      saleId: sale.id,
+      projectId: unit.project.id,
+      unitId: unit.id,
+      unitName: unit.name,
+      buyerName: buyer.fullName,
+      currency: unit.project.currency,
+      amountMinor: unit.priceMinor.toString(),
+      planLabel:
+        input.planType === 'INSTALLMENTS'
+          ? `${input.termMonths}-month installment plan`
+          : 'full payment'
+    }
+
+    await recordAudit(tx, actor, {
+      action: 'sale.created',
+      entityType: 'Sale',
+      entityId: sale.id,
+      entityLabel: unit.name,
+      context: auditContext
+    })
+
+    // Two entries, because two things happened: a contract was signed, and a
+    // unit left inventory. They are separate rows rather than one because they
+    // are separate questions — "when did we sell 4C" and "when did 4C stop
+    // being available" are asked by different people looking at different
+    // screens, and the entity-type filter is what lets each of them find theirs.
+    //
+    // `reserveUnit` above did the actual write; it is a shared conditional
+    // helper with no actor, so the entry is recorded here where the actor and
+    // the unit are both in scope. The "from" is AVAILABLE by construction — the
+    // claim only succeeds against an AVAILABLE row.
+    await recordAudit(tx, actor, {
+      action: 'unit.status_changed',
+      entityType: 'Unit',
+      entityId: unit.id,
+      entityLabel: unit.name,
+      changes: [{ field: 'status', from: enumValue('AVAILABLE'), to: enumValue('SOLD') }],
+      context: auditContext
     })
 
     return { saleId: sale.id }

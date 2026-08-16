@@ -5,19 +5,34 @@ import { ServiceError } from '@/server/services/errors'
 import { formatDocumentNumber, nextDocumentSequence } from '@/server/documents/numbering'
 import { lockSale } from '@/server/services/allocations'
 import { constraintTargetIncludes } from '@/server/services/units'
+import { recordAudit } from '@/server/audit/record'
+import type { AuditContext } from '@/domain/audit'
 
+/**
+ * The one place a Document row is created, and therefore the one place a
+ * document has to be audited — all three types funnel through here, so
+ * "issuing an invoice is recorded" is a property of the function rather than
+ * something each caller has to remember.
+ *
+ * The audit write shares this transaction with the document, so a document can
+ * never exist without the record of who issued it — the same rule the receipt
+ * itself follows inside `recordPayment`.
+ */
 async function createDocument(
   tx: Prisma.TransactionClient,
+  actor: SessionActor,
   args: {
     orgId: string
     saleId: string
     type: DocumentType
     scheduleEntryId?: string
     paymentId?: string
+    /** What the sentence needs to name the unit and link to the sale. */
+    context: AuditContext
   }
 ) {
   const sequence = await nextDocumentSequence(tx, args.orgId)
-  return tx.document.create({
+  const document = await tx.document.create({
     data: {
       orgId: args.orgId,
       saleId: args.saleId,
@@ -28,6 +43,21 @@ async function createDocument(
       paymentId: args.paymentId ?? null
     }
   })
+
+  await recordAudit(tx, actor, {
+    action: 'document.issued',
+    entityType: 'Document',
+    entityId: document.id,
+    entityLabel: document.number,
+    context: {
+      ...args.context,
+      saleId: args.saleId,
+      documentNumber: document.number,
+      documentType: args.type
+    }
+  })
+
+  return document
 }
 
 /**
@@ -71,7 +101,14 @@ export async function issueInvoice(actor: SessionActor, scheduleEntryId: string)
 
   const entry = await prisma.scheduleEntry.findFirst({
     where: { id: scheduleEntryId, sale: { orgId: actor.orgId, buyerId } },
-    include: { sale: { select: { id: true } }, document: true }
+    include: {
+      // The unit rides along for the audit entry's sentence and link — see
+      // `createDocument`. Same relation this query already resolved.
+      sale: {
+        select: { id: true, unit: { select: { id: true, name: true, projectId: true } } }
+      },
+      document: true
+    }
   })
   if (!entry) throw new ServiceError('Installment not found', 'NOT_FOUND')
 
@@ -83,11 +120,18 @@ export async function issueInvoice(actor: SessionActor, scheduleEntryId: string)
 
   try {
     const doc = await prisma.$transaction((tx) =>
-      createDocument(tx, {
+      createDocument(tx, actor, {
         orgId: actor.orgId,
         saleId: entry.sale.id,
         type: 'INVOICE',
-        scheduleEntryId: entry.id
+        scheduleEntryId: entry.id,
+        context: {
+          saleId: entry.sale.id,
+          unitId: entry.sale.unit?.id,
+          unitName: entry.sale.unit?.name,
+          projectId: entry.sale.unit?.projectId,
+          entrySequence: entry.sequence
+        }
       })
     )
     return { documentId: doc.id }
@@ -104,14 +148,30 @@ export async function issueInvoice(actor: SessionActor, scheduleEntryId: string)
   }
 }
 
-/** Called inside the payment transaction, so a receipt always exists for a payment. */
+/**
+ * Called inside the payment transaction, so a receipt always exists for a
+ * payment — and now so does the record of who issued it, which `createDocument`
+ * writes into the same transaction.
+ *
+ * Takes the actor rather than a bare `orgId`: the org is read off the actor
+ * (the caller was passing `actor.orgId` anyway) and the audit entry needs the
+ * name and role besides. `context` is the payment's, so the receipt's entry
+ * names the same unit and links to the same sale.
+ */
 export async function issueReceipt(
   tx: Prisma.TransactionClient,
-  orgId: string,
+  actor: SessionActor,
   saleId: string,
-  paymentId: string
+  paymentId: string,
+  context: AuditContext
 ) {
-  const doc = await createDocument(tx, { orgId, saleId, type: 'RECEIPT', paymentId })
+  const doc = await createDocument(tx, actor, {
+    orgId: actor.orgId,
+    saleId,
+    type: 'RECEIPT',
+    paymentId,
+    context
+  })
   // The number, not just the id: the confirmation the agent reads after
   // recording names the receipt ("Receipt RCP-000031"), and re-reading the row
   // for it outside this transaction would be a second query for a value that
@@ -137,9 +197,17 @@ export async function issueReceipt(
 export async function issueStatement(actor: SessionActor, saleId: string) {
   const saleExists = await prisma.sale.findFirst({
     where: { id: saleId, orgId: actor.orgId },
-    select: { id: true }
+    // The unit, for the audit entry — see `createDocument`.
+    select: { id: true, unit: { select: { id: true, name: true, projectId: true } } }
   })
   if (!saleExists) throw new ServiceError('Sale not found', 'NOT_FOUND')
+
+  const context: AuditContext = {
+    saleId,
+    unitId: saleExists.unit?.id,
+    unitName: saleExists.unit?.name,
+    projectId: saleExists.unit?.projectId
+  }
 
   const doc = await prisma.$transaction(async (tx) => {
     await lockSale(tx, saleId)
@@ -148,7 +216,12 @@ export async function issueStatement(actor: SessionActor, saleId: string) {
     if (existing) return existing
 
     try {
-      return await createDocument(tx, { orgId: actor.orgId, saleId, type: 'STATEMENT' })
+      return await createDocument(tx, actor, {
+        orgId: actor.orgId,
+        saleId,
+        type: 'STATEMENT',
+        context
+      })
     } catch (error) {
       // Belt-and-braces behind the lock above, which already makes this
       // unreachable in practice: the lock serialises every concurrent
