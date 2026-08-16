@@ -412,3 +412,35 @@ model NotificationLog {
   @@unique([scheduleEntryId, templateKey, channel])
   @@index([orgId, createdAt])
 }
+
+/// One fixed-window counter for the rate limiter: a key, when its window
+/// opened, and how many attempts have landed in it.
+///
+/// Postgres rather than Redis because this project runs no Redis and a login
+/// attempt is a write it can afford — see the header of src/server/rate-limit.ts.
+/// One row per (key, tier), so a policy's per-minute and per-hour budgets never
+/// share a counter.
+///
+/// The key is the primary key rather than a surrogate id with a unique index,
+/// because the whole access pattern is `INSERT ... ON CONFLICT ("key") DO
+/// UPDATE`: Postgres needs a unique constraint on that column to arbitrate the
+/// conflict, and a second identifier would be a column nothing ever reads.
+///
+/// Both timestamps are `Timestamptz` on purpose. The increment statement
+/// compares `windowStart` against a parameter computed in JavaScript, and a
+/// naive `timestamp` column would make that comparison depend on the session's
+/// TimeZone setting — a rate limiter that is an hour out on some connections is
+/// worse than none, because it looks like it is working.
+///
+/// Holds no personal data beyond an email address and a source address inside
+/// the key, and every row is deleted by `purgeExpiredRateLimitHits` once its
+/// window is over.
+model RateLimitHit {
+  key         String   @id
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int      @default(0)
+  /// The end of this row's window: the cron reaper's only filter.
+  expiresAt   DateTime @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}

@@ -3,9 +3,16 @@
 import { redirect } from 'next/navigation'
 import { z } from 'zod'
 import { RESET_TOKEN_TTL_MS } from '@/domain/password-reset'
+import { resetRequestScopes } from '@/domain/rate-limit'
 import { renderPasswordResetEmail } from '@/server/notifications/templates'
 import { ensureEmailSender } from '@/server/notifications/resend'
 import { getSender } from '@/server/notifications/sender'
+import {
+  RATE_LIMIT_MESSAGE,
+  checkRateLimit,
+  clientIp,
+  recordRateLimitHit
+} from '@/server/rate-limit'
 import { requestPasswordReset } from '@/server/services/passwords'
 
 const EmailSchema = z.string().trim().toLowerCase().email('Enter a valid email address')
@@ -79,6 +86,40 @@ export async function requestPasswordResetAction(
   // Started before the first read, so the floor covers every branch below
   // rather than only the one that sends mail.
   const startedAt = Date.now()
+
+  /**
+   * The mail-bomb guard, and the second of two.
+   *
+   * `requestPasswordReset` already refuses a second link for the same *user*
+   * inside a minute, which protects the inbox of anyone who has an account.
+   * It cannot protect anything else: an unknown address never reaches that
+   * check, so an attacker could still make this app do a database read, a
+   * Resend round trip's worth of waiting and a 1.2-second server hold for
+   * every submission they cared to send. This counter is the one that bounds
+   * the request itself rather than the email it may produce.
+   *
+   * Counted for every accepted request, not only the ones that send mail —
+   * the whole point is that the caller must not be able to tell the
+   * difference, and a counter that only advanced for real accounts would say
+   * out loud which addresses those are.
+   *
+   * The refusal is safe to show here for the same reason it is safe on the
+   * login page: the counters are keyed on what was typed and where from,
+   * never on what the database holds, so an unregistered address is throttled
+   * on exactly the same schedule as a registered one.
+   */
+  const scopes = resetRequestScopes(email, clientIp())
+  const gate = await checkRateLimit(scopes, new Date())
+  if (!gate.allowed) {
+    // Returned without the timing floor below, on purpose. The floor exists to
+    // hide differences that depend on what the database said; this branch
+    // never asked it anything, and whether a caller is throttled is a fact
+    // about their own submissions, not about the account. Padding it would
+    // only hold a serverless function open for 1.2 seconds per request an
+    // attacker chooses to send — paying for the flood we are refusing.
+    return RATE_LIMIT_MESSAGE
+  }
+  await recordRateLimitHit(scopes, new Date())
 
   try {
     const { resetUrl, fullName } = await requestPasswordReset(email, new Date())
