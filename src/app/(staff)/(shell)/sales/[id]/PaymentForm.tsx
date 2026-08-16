@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
 import { Button, CONTROL_CLASS, Field, Notice, Select } from '@/components/ui'
 import { toMinor } from '@/domain/currency'
@@ -92,6 +92,24 @@ export function PaymentForm({
   const [result, formAction] = useFormState(recordPaymentAction, undefined)
   const [entryId, setEntryId] = useState('')
   const [amount, setAmount] = useState('')
+  const [formKey, setFormKey] = useState(0)
+
+  // A recorded payment empties the form.
+  //
+  // The confirmation is what tells the agent it worked; this is what stops the
+  // same figure sitting in the box afterwards, aimed at an entry that may still
+  // be partly outstanding, one tap away from being recorded a second time. That
+  // is the exact accident this screen was rebuilt around, so the form does not
+  // keep the ammunition. Remounting via `key` clears the uncontrolled fields
+  // too — reference, note, and the date back to today — while the notice above
+  // survives it, because it lives outside the form.
+  useEffect(() => {
+    if (result?.ok) {
+      setEntryId('')
+      setAmount('')
+      setFormKey((key) => key + 1)
+    }
+  }, [result])
 
   // Nothing left to pay: an empty select with a required attribute is a form
   // that can never be submitted and never says why.
@@ -113,73 +131,83 @@ export function PaymentForm({
     chosen !== null && parsed !== null && parsed > BigInt(chosen.outstandingMinor)
 
   return (
-    <form action={formAction} className="space-y-3">
-      <input type="hidden" name="saleId" value={saleId} />
-
+    // The notice sits outside the form on purpose: the form is remounted on
+    // success to clear itself, and the confirmation has to survive that.
+    <div className="space-y-3">
       <Notice result={result} />
 
-      <Field label="Applies to" name="scheduleEntryId" required>
-        <Select
-          name="scheduleEntryId"
-          required
-          value={entryId}
-          onChange={(event) => setEntryId(event.target.value)}
-        >
-          <option value="">Choose which payment this settles…</option>
-          {entries.map((entry) => (
-            <option key={entry.id} value={entry.id}>
-              {entry.label}
-            </option>
-          ))}
-        </Select>
-      </Field>
+      <form key={formKey} action={formAction} className="space-y-3">
+        <input type="hidden" name="saleId" value={saleId} />
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field
-          label="Amount"
-          name="amount"
-          required
-          hint={chosen ? `${chosen.title} has ${chosen.outstandingLabel} outstanding` : undefined}
-        >
-          <input
-            name="amount"
-            inputMode="decimal"
-            placeholder="0.00"
+        <Field label="Applies to" name="scheduleEntryId" required>
+          <Select
+            name="scheduleEntryId"
             required
-            value={amount}
-            onChange={(event) => setAmount(event.target.value)}
-            className={CONTROL_CLASS}
-          />
-        </Field>
-        <Field label="Date received" name="receivedAt" type="date" defaultValue={todayIso()} required />
-      </div>
-
-      {exceeds && chosen ? (
-        // Amber, not red: nothing has failed yet. This is the form telling the
-        // agent what it will refuse if they press the button, in the same tone
-        // a partial payment is drawn in.
-        <p className="rounded-btn border border-status-partial-border bg-status-partial-bg px-3 py-2 text-sm text-status-partial-text">
-          That is more than {chosen.title} still owes. Enter {chosen.outstandingLabel} or less, or
-          record the rest against another entry.
-        </p>
-      ) : null}
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Method" name="method">
-          <Select name="method" defaultValue="BANK_TRANSFER">
-            {METHODS.map((method) => (
-              <option key={method.value} value={method.value}>
-                {method.label}
+            value={entryId}
+            onChange={(event) => setEntryId(event.target.value)}
+          >
+            <option value="">Choose which payment this settles…</option>
+            {entries.map((entry) => (
+              <option key={entry.id} value={entry.id}>
+                {entry.label}
               </option>
             ))}
           </Select>
         </Field>
-        <Field label="Reference" name="reference" placeholder="Optional" />
-      </div>
 
-      <Field label="Note" name="note" placeholder="Optional" />
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field
+            label="Amount"
+            name="amount"
+            required
+            hint={chosen ? `${chosen.title} has ${chosen.outstandingLabel} outstanding` : undefined}
+          >
+            <input
+              name="amount"
+              inputMode="decimal"
+              placeholder="0.00"
+              required
+              value={amount}
+              onChange={(event) => setAmount(event.target.value)}
+              className={CONTROL_CLASS}
+            />
+          </Field>
+          <Field
+            label="Date received"
+            name="receivedAt"
+            type="date"
+            defaultValue={todayIso()}
+            required
+          />
+        </div>
 
-      <SubmitButton disabled={chosen === null || exceeds} />
-    </form>
+        {exceeds && chosen ? (
+          // Amber, not red: nothing has failed yet. This is the form telling
+          // the agent what it will refuse if they press the button, in the same
+          // tone a partial payment is drawn in.
+          <p className="rounded-btn border border-status-partial-border bg-status-partial-bg px-3 py-2 text-sm text-status-partial-text">
+            That is more than {chosen.title} still owes. Enter {chosen.outstandingLabel} or less, or
+            record the rest against another entry.
+          </p>
+        ) : null}
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Method" name="method">
+            <Select name="method" defaultValue="BANK_TRANSFER">
+              {METHODS.map((method) => (
+                <option key={method.value} value={method.value}>
+                  {method.label}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label="Reference" name="reference" placeholder="Optional" />
+        </div>
+
+        <Field label="Note" name="note" placeholder="Optional" />
+
+        <SubmitButton disabled={chosen === null || exceeds} />
+      </form>
+    </div>
   )
 }
