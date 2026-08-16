@@ -8,3 +8,9 @@ next-env.d.ts
 .vercel
 
 .env*
+# Any stray credential dump, however it is named. .env* only catches
+# files that start with a dot; Neon and Vercel both hand you files that
+# do not (env (1).txt, .env.local.txt).
+*env*.txt
+*credentials*
+*.pgpass
