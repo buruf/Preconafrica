@@ -296,7 +296,11 @@ describe('applyAllocations', () => {
   })
 
   it('issues no statements for a payment that allocated nowhere', async () => {
-    // A pure overpayment against a fully settled schedule.
+    // No caller can produce this any more — a payment now always carries
+    // exactly one allocation — but the guard stays: it is what kept the old
+    // cascade's pure-overpayment case from issuing a pointless UPDATE, and a
+    // helper that quietly wrote nothing-shaped SQL would be worse than one
+    // that returns early.
     const { tx, calls } = fakeTx()
     expect(await applyAllocations(tx, 'pay_3', [], RECEIVED_AT, entries)).toEqual([])
     expect(calls).toEqual([])

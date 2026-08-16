@@ -5,8 +5,14 @@ import { assertRole, type SessionActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { applyAllocations, lockSale, recomputeEntries } from '@/server/services/allocations'
 import { issueReceipt } from '@/server/documents/issue'
-import { allocatePayment, AllocationError } from '@/domain/allocation'
-import { toMinor } from '@/domain/currency'
+import {
+  allocateToEntry,
+  AllocationError,
+  EntrySettledError,
+  OutstandingExceededError
+} from '@/domain/allocation'
+import { formatMinor, toMinor } from '@/domain/currency'
+import { scheduleEntryTitle } from '@/domain/schedule'
 
 /**
  * Schema-level shape check only — this cannot know which currency the sale is
@@ -27,6 +33,14 @@ const HAS_NONZERO_DIGIT = /[1-9]/
 
 export const RecordPaymentSchema = z.object({
   saleId: z.string().min(1),
+  /**
+   * Which schedule entry this payment settles — the deposit or one installment.
+   * Required, with no default and no "apply it wherever it fits" mode: the
+   * whole point of the targeted model is that a person decided where the money
+   * lands, and a default is exactly how a duplicate deposit ends up spread
+   * across thirteen installments nobody chose.
+   */
+  scheduleEntryId: z.string().min(1, 'Choose which payment this settles'),
   amount: z.string().regex(AMOUNT_PATTERN, 'Enter a valid amount').refine(
     (v) => HAS_NONZERO_DIGIT.test(v),
     'Amount must be greater than zero'
@@ -114,19 +128,39 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
       throw new ServiceError('That sale is cancelled — no payment can be recorded against it', 'CONFLICT')
     }
 
-    const entries = await tx.scheduleEntry.findMany({
-      where: { saleId: sale.id },
-      orderBy: { sequence: 'asc' },
+    // The chosen entry, resolved *within this sale* — and the sale was already
+    // resolved within the actor's organisation above. An id belonging to
+    // another sale (or another org's sale) therefore matches nothing and comes
+    // back NOT_FOUND, the same answer a nonexistent id gets, so a forged id can
+    // neither be applied nor used to probe what exists. Read under the lock,
+    // with the rest of the schedule, so the outstanding figure the cap is
+    // computed from cannot move underneath the decision.
+    const entry = await tx.scheduleEntry.findFirst({
+      where: { id: input.scheduleEntryId, saleId: sale.id },
       select: { id: true, sequence: true, amountDueMinor: true, amountPaidMinor: true }
     })
+    if (!entry) throw new ServiceError('That payment schedule entry was not found', 'NOT_FOUND')
 
-    let allocations
-    let overpaymentMinor: bigint
+    let allocation
     try {
-      ;({ allocations, overpaymentMinor } = allocatePayment(entries, amountMinor))
+      ;({ allocation } = allocateToEntry(entry, amountMinor))
     } catch (error) {
       // AllocationError is a domain error about this request's money, not a
-      // bug — surface it as a validation failure rather than a raw 500.
+      // bug — surface it as a validation failure rather than a raw 500. The
+      // two the agent can act on are spelled out with the figures they need:
+      // the domain knows the minor units, this layer knows the currency.
+      if (error instanceof OutstandingExceededError) {
+        throw new ServiceError(
+          `${scheduleEntryTitle(entry.sequence)} has ${formatMinor(error.outstandingMinor, sale.currency)} outstanding — enter that amount or less.`,
+          'VALIDATION'
+        )
+      }
+      if (error instanceof EntrySettledError) {
+        throw new ServiceError(
+          `${scheduleEntryTitle(entry.sequence)} is already fully paid — choose an entry that still owes something.`,
+          'VALIDATION'
+        )
+      }
       if (error instanceof AllocationError) throw new ServiceError(error.message, 'VALIDATION')
       throw error
     }
@@ -144,9 +178,10 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
       }
     })
 
-    // `entries` carries every due amount applyAllocations needs, so it never
-    // has to read one back.
-    const settledEntryIds = await applyAllocations(tx, payment.id, allocations, receivedAt, entries)
+    // Exactly one allocation, against the one entry that was chosen — and that
+    // entry carries the due amount applyAllocations needs, so it never has to
+    // read one back.
+    const settledEntryIds = await applyAllocations(tx, payment.id, [allocation], receivedAt, [entry])
 
     // Issued inside this same transaction, not after it commits: a payment
     // must never be able to exist without its receipt. This adds one
@@ -154,11 +189,32 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
     // the transaction — negligible next to the allocation writes above, and
     // nowhere near the interactive-transaction timeout, so no override is
     // introduced here.
-    const { documentId: receiptId } = await issueReceipt(tx, actor.orgId, sale.id, payment.id)
+    const { documentId: receiptId, number: receiptNumber } = await issueReceipt(
+      tx,
+      actor.orgId,
+      sale.id,
+      payment.id
+    )
 
     await syncSaleStatus(tx, sale.id, locked.status)
 
-    return { paymentId: payment.id, receiptId, overpaymentMinor, settledEntryIds }
+    // `overpaymentMinor` is gone rather than returned as a permanent zero: the
+    // amount is capped at one entry's outstanding, so a surplus cannot occur,
+    // and a field that is always zero is a trap for the next reader.
+    //
+    // What replaces it is what the confirmation needs — the figure, where it
+    // landed, and the receipt it produced — returned from here rather than
+    // re-queried by the caller, because all three are known inside this
+    // transaction and none of them may be trusted from the client.
+    return {
+      paymentId: payment.id,
+      receiptId,
+      receiptNumber,
+      amountMinor,
+      currency: sale.currency,
+      entrySequence: entry.sequence,
+      settledEntryIds
+    }
   })
 }
 
@@ -169,7 +225,14 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
 
   const payment = await prisma.payment.findFirst({
     where: { id: paymentId, orgId: actor.orgId },
-    include: { allocations: { select: { scheduleEntryId: true } } }
+    include: {
+      // The sequences come along so the confirmation can name what has just
+      // gone back to being outstanding. Under the targeted model that is
+      // always exactly one entry; a payment recorded under the old cascade
+      // still carries several, and both are described truthfully.
+      allocations: { select: { scheduleEntryId: true, scheduleEntry: { select: { sequence: true } } } },
+      sale: { select: { currency: true } }
+    }
   })
   if (!payment) throw new ServiceError('Payment not found', 'NOT_FOUND')
   if (payment.voidedAt) throw new ServiceError('That payment is already void', 'CONFLICT')
@@ -212,8 +275,28 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
 
     // `undefined` means "leave paidAt unchanged" — see recomputeEntries for
     // why a still-covered entry keeps its original settlement date.
+    //
+    // This is the whole of a void under the targeted model, and it is the
+    // same three statements it always was: withdraw the allocations, recompute
+    // the entries they touched from the rows that survive, re-derive the sale's
+    // status. There is nothing to re-cascade — the money never flowed past the
+    // one entry it was recorded against, so no *other* entry's balance can
+    // depend on this payment. The reconciliation invariant holds for the same
+    // reason it always did: every entry's amountPaidMinor is recomputed from
+    // its surviving allocations rather than decremented, so it agrees with the
+    // audit trail whatever the payment happened to touch.
     await recomputeEntries(tx, affectedEntries, undefined)
 
     await syncSaleStatus(tx, payment.saleId, locked.status)
   })
+
+  return {
+    amountMinor: payment.amountMinor,
+    currency: payment.sale.currency,
+    // Ascending, so "installments 1 and 2" reads in schedule order rather than
+    // in whatever order the allocation rows came back.
+    entrySequences: payment.allocations
+      .map((a) => a.scheduleEntry.sequence)
+      .sort((a, b) => a - b)
+  }
 }

@@ -19,15 +19,16 @@ import type { Allocation } from '@/domain/allocation'
 /**
  * Serialises everything that rewrites a sale's balances against that one sale.
  *
- * Without this, two agents recording payments on the same sale both read the
- * schedule before either writes, both allocate to the same oldest entry, and
- * both commit. The reconciliation invariant still holds — each entry's total
- * still equals the sum of its allocations — which is precisely why that check
- * never caught it. What breaks is the cascade: the second payment piles onto
- * an entry the first already covered instead of flowing forward, the returned
- * overpayment is wrong, and every later payment on the sale then dies on
- * `AllocationError: already over-allocated`, wedging the sale until someone
- * repairs it by hand.
+ * Without this, two agents recording payments against the same entry both read
+ * its outstanding figure before either writes, both find the whole amount
+ * available, and both commit. The reconciliation invariant still holds — the
+ * entry's total still equals the sum of its allocations — which is precisely
+ * why that check never caught it. What breaks is the cap: the entry ends up
+ * paid beyond what it was ever due, and every later payment against it then
+ * dies on `AllocationError: already over-allocated`, wedging the sale until
+ * someone repairs it by hand. The targeted rule narrows the damage — a race
+ * can no longer scramble a cascade across a whole schedule — but it does not
+ * remove it, because the cap is still computed from a row that was only read.
  *
  * A row lock on the Sale is the narrowest thing that fixes it: concurrent
  * payments on *different* sales never contend, which is the overwhelmingly
@@ -84,10 +85,12 @@ type Tx = Prisma.TransactionClient
  *     paidAt cleared — and that clearing happens for both callers alike.
  *
  * Query cost is constant — four statements at most, regardless of how many
- * entries are being recomputed. That matters: a single payment can cascade
- * across every installment of a 36-month schedule, and a per-entry round trip
- * would blow through Prisma's 5s interactive-transaction default long before
- * the platform's own function timeout could even be reached.
+ * entries are being recomputed. A new payment now touches exactly one entry,
+ * but voiding does not: payments recorded under the old oldest-first cascade
+ * still hold allocations across a whole 36-month schedule, they are valid
+ * history, and withdrawing one has to recompute every entry it reached. A
+ * per-entry round trip would blow through Prisma's 5s interactive-transaction
+ * default long before the platform's own function timeout could be reached.
  */
 export async function recomputeEntries(
   tx: Tx,

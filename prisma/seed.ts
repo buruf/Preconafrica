@@ -1,7 +1,7 @@
 import { PrismaClient, type PaymentMethod, type PlanType } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { formatMinor, toMinor } from '../src/domain/currency'
-import { allocatePayment } from '../src/domain/allocation'
+import { allocateToEntry } from '../src/domain/allocation'
 import {
   NO_INSTALLMENT_FEE,
   computeInstallmentFeeMinor,
@@ -277,7 +277,21 @@ async function main() {
     depositMajor: string
     termMonths: number | null
     signedAt: Date
-    payments: Array<{ amountMajor: string; receivedAt: Date; method: PaymentMethod; reference: string }>
+    /**
+     * Each payment names the one schedule entry it settles, by sequence — the
+     * deposit is 0, the installments are 1..n. That is not seed bookkeeping,
+     * it is the product's rule: `recordPayment` takes a `scheduleEntryId` and
+     * applies the money to that entry and no other. A fixture that just threw
+     * an amount at the sale and let it cascade would be seeding a behaviour the
+     * running app no longer has.
+     */
+    payments: Array<{
+      sequence: number
+      amountMajor: string
+      receivedAt: Date
+      method: PaymentMethod
+      reference: string
+    }>
   }) {
     const currency = opts.project.currency
     const unit = await prisma.unit.findFirstOrThrow({
@@ -328,29 +342,34 @@ async function main() {
     await prisma.unit.update({ where: { id: unit.id }, data: { status: 'SOLD' } })
 
     for (const p of opts.payments) {
+      // Re-read each time, because the previous payment in this fixture may
+      // have moved the entry this one targets.
       const entries = await prisma.scheduleEntry.findMany({
         where: { saleId: sale.id },
         orderBy: { sequence: 'asc' }
       })
 
-      const { allocations, overpaymentMinor } = allocatePayment(
-        entries.map((e) => ({
-          id: e.id,
-          sequence: e.sequence,
-          amountDueMinor: e.amountDueMinor,
-          amountPaidMinor: e.amountPaidMinor
-        })),
-        toMinor(p.amountMajor, currency)
-      )
-
-      // A seed that quietly loses money is worse than one that fails loudly:
-      // if a future buyer state overpays, surface it instead of letting the
-      // surplus vanish and Payment.amountMinor drift from its allocations.
-      if (overpaymentMinor > 0n) {
+      const target = entries.find((e) => e.sequence === p.sequence)
+      if (!target) {
         throw new Error(
-          `Seed payment ${p.reference} for ${opts.buyerName} (sale on unit ${opts.unitName}) overpays by ${overpaymentMinor} minor units — reduce the amount or extend the schedule.`
+          `Seed payment ${p.reference} for ${opts.buyerName} (sale on unit ${opts.unitName}) names schedule entry ${p.sequence}, which this sale does not have.`
         )
       }
+
+      // A seed that quietly loses money is worse than one that fails loudly.
+      // Under the targeted rule the failure the domain raises is sharper than
+      // the old surplus check: a fixture whose amount exceeds what that one
+      // entry still owes cannot be applied at all, and says which entry and by
+      // how much rather than reporting an unallocated remainder.
+      const { allocation } = allocateToEntry(
+        {
+          id: target.id,
+          sequence: target.sequence,
+          amountDueMinor: target.amountDueMinor,
+          amountPaidMinor: target.amountPaidMinor
+        },
+        toMinor(p.amountMajor, currency)
+      )
 
       // One transaction per payment: applyAllocations requires a
       // Prisma.TransactionClient (its contract is unconditional — it must
@@ -370,9 +389,9 @@ async function main() {
           }
         })
 
-        // `entries` is the schedule the allocation was computed from, so it
-        // already carries every amountDueMinor the recompute needs.
-        await applyAllocations(tx, payment.id, allocations, p.receivedAt, entries)
+        // One allocation, against the one entry the fixture named — which
+        // already carries the amountDueMinor the recompute needs.
+        await applyAllocations(tx, payment.id, [allocation], p.receivedAt, [target])
 
         // A receipt per payment, exactly as recordPayment would issue one.
         // documents/issue.ts pulls the auth stack, which a bare tsx process
@@ -434,17 +453,19 @@ async function main() {
   // Payment allocated against it. A seeded buyer with no deposit payment is a
   // buyer who signed, never paid a naira, and is one day in arrears — which is
   // the truth of the model but not the demo state these four fixtures exist to
-  // show. `allocatePayment` walks the entries in sequence order, so the deposit
-  // payment lands on entry 0 with no special handling here.
+  // show. Every payment below names the entry it settles, exactly as the agent
+  // recording it now has to: `sequence: 0` is the deposit.
 
   // 1. Full payment, settled. Nothing financed, so no deposit and no charge.
   // Unit '101' is the deliberate choice: position 1 -> 2 bedrooms ->
   // 145,000,000 NGN, which is exactly the payment amount below. Unit '102'
   // (3 bedrooms, 250,000,000 NGN) would leave this "settled" sale half paid.
+  // A FULL sale's single entry is sequence 1, not 0 — there is no deposit to
+  // be entry 0 (see generateSchedule).
   await createSale({
     project: lagos, buyerId: amina.id, buyerName: amina.fullName, unitName: '101',
     planType: 'FULL', depositMajor: '0', termMonths: null, signedAt: utc(2026, 3, 2),
-    payments: [{ amountMajor: '145000000', receivedAt: utc(2026, 3, 2), method: 'BANK_TRANSFER', reference: 'GTB/2026/03/0021' }]
+    payments: [{ sequence: 1, amountMajor: '145000000', receivedAt: utc(2026, 3, 2), method: 'BANK_TRANSFER', reference: 'GTB/2026/03/0021' }]
   })
 
   // 2. 36-month plan, fully current — deposit plus five installments paid on time.
@@ -460,8 +481,11 @@ async function main() {
     project: nairobi, buyerId: kwame.id, buyerName: kwame.fullName, unitName: '2A',
     planType: 'INSTALLMENTS', depositMajor: '2000000', termMonths: 36, signedAt: utc(2026, 2, 15),
     payments: [
-      { amountMajor: '2000000', receivedAt: utc(2026, 2, 15), method: 'BANK_TRANSFER', reference: 'KCB/2026/02/1188' },
+      { sequence: 0, amountMajor: '2000000', receivedAt: utc(2026, 2, 15), method: 'BANK_TRANSFER', reference: 'KCB/2026/02/1188' },
+      // Installment m, paid in month m — one payment, one entry, which is what
+      // the monthly rhythm of this plan actually looks like.
       ...[1, 2, 3, 4, 5].map((m) => ({
+        sequence: m,
         amountMajor: '281111.11', receivedAt: utc(2026, 2 + m, 15), method: 'MOBILE_MONEY' as PaymentMethod,
         reference: `MPESA-RJ${m}K4T2X9`
       }))
@@ -485,9 +509,9 @@ async function main() {
     project: lagos, buyerId: zainab.id, buyerName: zainab.fullName, unitName: '303',
     planType: 'INSTALLMENTS', depositMajor: '25000000', termMonths: 36, signedAt: utc(2026, 5, 20),
     payments: [
-      { amountMajor: '25000000', receivedAt: utc(2026, 5, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/05/7742' },
-      { amountMajor: '1736111.11', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
-      { amountMajor: '800000', receivedAt: utc(2026, 7, 22), method: 'BANK_TRANSFER', reference: 'ZEN/2026/07/9002' }
+      { sequence: 0, amountMajor: '25000000', receivedAt: utc(2026, 5, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/05/7742' },
+      { sequence: 1, amountMajor: '1736111.11', receivedAt: utc(2026, 6, 20), method: 'BANK_TRANSFER', reference: 'ZEN/2026/06/8841' },
+      { sequence: 2, amountMajor: '800000', receivedAt: utc(2026, 7, 22), method: 'BANK_TRANSFER', reference: 'ZEN/2026/07/9002' }
     ]
   })
 
@@ -497,21 +521,27 @@ async function main() {
   // installments amortize 6,600,000 -> 183,333.33 a month (x35, final
   // 183,333.45). Total owed is 8,100,000 = price 7,500,000 + markup 600,000.
   //
-  // Signed 2026-01-10, so against "today" (2026-08-10) entries 0 through 7 have
-  // all reached their due date — but an entry due *today* is not yet overdue
-  // (deriveStatus needs the day to have passed), which leaves entries 0-6 as the
-  // seven that could be in arrears. The deposit payment settles entry 0. Two
-  // CASH payments of 150,000 (300,000 together) then settle installment 1
-  // exactly (183,333.33) and land the remaining 116,666.67 into installment 2,
-  // leaving it partial. Unsettled and past due: installments 2 (partial), 3, 4,
-  // 5 and 6 — exactly five, with installment 7 due today still PENDING.
+  // Signed 2026-01-10, so entries 0 through 7 have all reached their due date
+  // by mid-August 2026 — an entry due *today* is not yet overdue (deriveStatus
+  // needs the day to have passed), so the count moves with the calendar and is
+  // deliberately not pinned here.
+  //
+  // The deposit payment settles entry 0. Two CASH payments of 150,000 follow,
+  // and under the targeted rule each one lands where the agent put it and stops
+  // there: 150,000 against installment 1 (due 183,333.33, so PARTIAL) and
+  // 150,000 against installment 2 (PARTIAL too). It used to be one cascade —
+  // 300,000 settling installment 1 exactly and spilling 116,666.67 into
+  // installment 2 — which is precisely the behaviour this fixture must no
+  // longer demonstrate: a walk-in paying 150,000 in cash is one payment against
+  // one installment, and the schedule now shows that rather than a settlement
+  // the buyer never made.
   await createSale({
     project: nairobi, buyerId: joseph.id, buyerName: joseph.fullName, unitName: '4C',
     planType: 'INSTALLMENTS', depositMajor: '1500000', termMonths: 36, signedAt: utc(2026, 1, 10),
     payments: [
-      { amountMajor: '1500000', receivedAt: utc(2026, 1, 10), method: 'BANK_TRANSFER', reference: 'EQTY/2026/01/0417' },
-      { amountMajor: '150000', receivedAt: utc(2026, 2, 10), method: 'CASH', reference: 'RCPT-0091' },
-      { amountMajor: '150000', receivedAt: utc(2026, 3, 12), method: 'CASH', reference: 'RCPT-0114' }
+      { sequence: 0, amountMajor: '1500000', receivedAt: utc(2026, 1, 10), method: 'BANK_TRANSFER', reference: 'EQTY/2026/01/0417' },
+      { sequence: 1, amountMajor: '150000', receivedAt: utc(2026, 2, 10), method: 'CASH', reference: 'RCPT-0091' },
+      { sequence: 2, amountMajor: '150000', receivedAt: utc(2026, 3, 12), method: 'CASH', reference: 'RCPT-0114' }
     ]
   })
 

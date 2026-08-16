@@ -14,6 +14,9 @@ import {
   isFreeInstallmentFee,
   percentToBps,
   scheduleEntryLabel,
+  scheduleEntryListPhrase,
+  scheduleEntryPhrase,
+  scheduleEntryTitle,
   totalScheduledMinor,
   type InstallmentFeeConfig
 } from '@/domain/schedule'
@@ -773,6 +776,46 @@ describe('scheduleEntryLabel', () => {
     for (const sequence of [1, 2, 12, 36, 360]) {
       expect(scheduleEntryLabel(sequence)).toBe(String(sequence))
     }
+  })
+})
+
+describe('scheduleEntryTitle', () => {
+  // The payment form's picker and the refusal messages read these. "3" alone
+  // tells nobody what they are choosing to settle.
+  it('names the deposit', () => {
+    expect(scheduleEntryTitle(DEPOSIT_SEQUENCE)).toBe('Deposit')
+  })
+
+  it('spells out an installment', () => {
+    expect(scheduleEntryTitle(1)).toBe('Installment 1')
+    expect(scheduleEntryTitle(36)).toBe('Installment 36')
+  })
+})
+
+describe('scheduleEntryPhrase', () => {
+  it('takes an article for the deposit and none for an installment', () => {
+    // "Recorded NGN 50,000.00 against the deposit." against "...against
+    // installment 3." Getting this wrong reads as a missing word.
+    expect(scheduleEntryPhrase(DEPOSIT_SEQUENCE)).toBe('the deposit')
+    expect(scheduleEntryPhrase(3)).toBe('installment 3')
+  })
+})
+
+describe('scheduleEntryListPhrase', () => {
+  it('returns the single phrase unchanged, which is every new payment', () => {
+    expect(scheduleEntryListPhrase([2])).toBe('installment 2')
+  })
+
+  it('joins the several entries an old cascade-era payment can hold', () => {
+    expect(scheduleEntryListPhrase([0, 1, 2])).toBe('the deposit, installment 1 and installment 2')
+    expect(scheduleEntryListPhrase([4, 5])).toBe('installment 4 and installment 5')
+  })
+
+  it('is empty for no entries at all', () => {
+    // A payment can hold no allocations only in cascade-era history (a pure
+    // overpayment). The caller drops the sentence rather than printing a
+    // dangling one.
+    expect(scheduleEntryListPhrase([])).toBe('')
   })
 })
 

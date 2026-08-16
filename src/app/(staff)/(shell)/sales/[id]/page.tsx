@@ -8,12 +8,13 @@ import {
   computeInstallmentFeeMinor,
   installmentFeeRateSuffix,
   isFreeInstallmentFee,
-  scheduleEntryLabel
+  scheduleEntryLabel,
+  scheduleEntryTitle
 } from '@/domain/schedule'
 import { formatMinor } from '@/domain/currency'
 import { Card, MoneyPair, PageHeader, ProgressBar, StatCard, StatusPill } from '@/components/ui'
 import { UnitImagery } from '@/components/media'
-import { PaymentForm } from './PaymentForm'
+import { PaymentForm, type PayableEntry } from './PaymentForm'
 import { VoidControl } from './VoidControl'
 import { InvoiceControl } from './InvoiceControl'
 
@@ -67,6 +68,30 @@ export default async function StaffSalePage({ params }: { params: { id: string }
   const paidEntries = sale.scheduleEntries.filter(
     (entry) => deriveStatus(entry, asOf) === 'PAID'
   ).length
+
+  // What the payment form may be pointed at: the entries that still owe
+  // something, in schedule order (getSaleForStaff already sorts by sequence),
+  // each labelled here on the server.
+  //
+  // Every field is a string. A `bigint` cannot cross into a client component at
+  // all, and a `number` would be the one float in a money path — so the
+  // outstanding figure travels twice, once as exact minor units for the
+  // client's own cap check and once already through `formatMinor` for display.
+  // A settled entry is not offered at all: an option that can only be refused
+  // is not a choice.
+  const payableEntries: PayableEntry[] = sale.scheduleEntries
+    .filter((entry) => entry.amountDueMinor > entry.amountPaidMinor)
+    .map((entry) => {
+      const outstandingMinor = entry.amountDueMinor - entry.amountPaidMinor
+      const title = scheduleEntryTitle(entry.sequence)
+      return {
+        id: entry.id,
+        title,
+        label: `${title} — due ${date(entry.dueDate)} — ${money(outstandingMinor)} outstanding`,
+        outstandingMinor: outstandingMinor.toString(),
+        outstandingLabel: money(outstandingMinor)
+      }
+    })
 
   // getSaleForStaff includes `documents` as the sale's flat list, not a
   // per-entry relation — build the lookup once rather than scanning the list
@@ -160,7 +185,7 @@ export default async function StaffSalePage({ params }: { params: { id: string }
 
       <h2 className="mb-2 mt-6 text-base font-semibold text-navy-900">Record a payment</h2>
       <Card className="mb-6">
-        <PaymentForm saleId={sale.id} />
+        <PaymentForm saleId={sale.id} currency={sale.currency} entries={payableEntries} />
       </Card>
 
       <h2 className="mb-2 mt-6 text-base font-semibold text-navy-900">Payment schedule</h2>
@@ -229,8 +254,15 @@ export default async function StaffSalePage({ params }: { params: { id: string }
                       Receipt
                     </Link>
                   ) : null}
-                  {actor.role === 'ADMIN' && !payment.voidedAt ? (
-                    <VoidControl saleId={sale.id} paymentId={payment.id} />
+                  {/* Rendered for an already-voided payment too, so the
+                      confirmation of a void survives the revalidation the void
+                      itself triggers — see VoidControl. */}
+                  {actor.role === 'ADMIN' ? (
+                    <VoidControl
+                      saleId={sale.id}
+                      paymentId={payment.id}
+                      voided={Boolean(payment.voidedAt)}
+                    />
                   ) : null}
                 </div>
               </li>

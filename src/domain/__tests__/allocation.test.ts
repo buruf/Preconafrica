@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { AllocationError, allocatePayment, type AllocatableEntry } from '@/domain/allocation'
+import {
+  allocateToEntry,
+  AllocationError,
+  EntrySettledError,
+  OutstandingExceededError,
+  type AllocatableEntry
+} from '@/domain/allocation'
 
 const entry = (
   sequence: number,
@@ -12,106 +18,109 @@ const entry = (
   amountPaidMinor
 })
 
-const threeEntries = () => [entry(1, 300n), entry(2, 300n), entry(3, 300n)]
-
-describe('allocatePayment', () => {
-  it('settles a single entry with an exact payment', () => {
-    const result = allocatePayment(threeEntries(), 300n)
-    expect(result.allocations).toEqual([{ entryId: 'e1', amountMinor: 300n }])
-    expect(result.appliedMinor).toBe(300n)
-    expect(result.overpaymentMinor).toBe(0n)
+/**
+ * The rule the platform records money by, in one function: a payment settles
+ * the one entry it was aimed at, capped at what that entry still owes.
+ *
+ * These replace the cascade tests that used to live here. The cascade was not
+ * wrong arithmetically — it reconciled exactly — but it spread a single payment
+ * across as many entries as its size reached, and a duplicate $50,000 deposit
+ * landing in thirteen places is indistinguishable, to the developer reading the
+ * schedule, from a system inventing money. The coverage is kept and rewritten
+ * to the rule that replaced it, rather than dropped.
+ */
+describe('allocateToEntry', () => {
+  it('settles the chosen entry with an exact payment', () => {
+    const result = allocateToEntry(entry(1, 300n), 300n)
+    expect(result.allocation).toEqual({ entryId: 'e1', amountMinor: 300n })
+    expect(result.outstandingBeforeMinor).toBe(300n)
+    expect(result.outstandingAfterMinor).toBe(0n)
   })
 
-  it('leaves an entry partial when the payment is short', () => {
-    const result = allocatePayment(threeEntries(), 120n)
-    expect(result.allocations).toEqual([{ entryId: 'e1', amountMinor: 120n }])
-    expect(result.overpaymentMinor).toBe(0n)
+  it('leaves the entry partial when the payment is short', () => {
+    const result = allocateToEntry(entry(1, 300n), 120n)
+    expect(result.allocation).toEqual({ entryId: 'e1', amountMinor: 120n })
+    expect(result.outstandingAfterMinor).toBe(180n)
   })
 
-  it('cascades a large payment across three entries', () => {
-    const result = allocatePayment(threeEntries(), 900n)
-    expect(result.allocations).toEqual([
-      { entryId: 'e1', amountMinor: 300n },
-      { entryId: 'e2', amountMinor: 300n },
-      { entryId: 'e3', amountMinor: 300n }
-    ])
-    expect(result.overpaymentMinor).toBe(0n)
+  it('tops up an already-partial entry, and only up to what is left', () => {
+    const result = allocateToEntry(entry(1, 300n, 250n), 50n)
+    expect(result.allocation).toEqual({ entryId: 'e1', amountMinor: 50n })
+    expect(result.outstandingBeforeMinor).toBe(50n)
+    expect(result.outstandingAfterMinor).toBe(0n)
   })
 
-  it('cascades and leaves the last touched entry partial', () => {
-    const result = allocatePayment(threeEntries(), 700n)
-    expect(result.allocations).toEqual([
-      { entryId: 'e1', amountMinor: 300n },
-      { entryId: 'e2', amountMinor: 300n },
-      { entryId: 'e3', amountMinor: 100n }
-    ])
+  it('refuses an amount above what the entry still owes, and says how much that is', () => {
+    // 300 due, 250 already paid: 50 is the ceiling, and 60 is refused rather
+    // than applied-and-cascaded. This is the whole change — under the old rule
+    // the extra 10 flowed to the next entry nobody chose.
+    const failure = (() => {
+      try {
+        allocateToEntry(entry(1, 300n, 250n), 60n)
+      } catch (error) {
+        return error
+      }
+    })()
+
+    expect(failure).toBeInstanceOf(OutstandingExceededError)
+    expect(failure).toBeInstanceOf(AllocationError)
+    // The figure travels on the error, because the layer that can format it
+    // into a sentence for the agent is not this one.
+    expect((failure as OutstandingExceededError).outstandingMinor).toBe(50n)
+    expect((failure as OutstandingExceededError).amountMinor).toBe(60n)
+    expect((failure as OutstandingExceededError).entryId).toBe('e1')
   })
 
-  it('tops up an already-partial entry before moving on', () => {
-    const entries = [entry(1, 300n, 250n), entry(2, 300n)]
-    const result = allocatePayment(entries, 100n)
-    expect(result.allocations).toEqual([
-      { entryId: 'e1', amountMinor: 50n },
-      { entryId: 'e2', amountMinor: 50n }
-    ])
-  })
+  it('refuses an entry that is already fully paid', () => {
+    const failure = (() => {
+      try {
+        allocateToEntry(entry(1, 300n, 300n), 50n)
+      } catch (error) {
+        return error
+      }
+    })()
 
-  it('skips fully paid entries', () => {
-    const entries = [entry(1, 300n, 300n), entry(2, 300n)]
-    const result = allocatePayment(entries, 300n)
-    expect(result.allocations).toEqual([{ entryId: 'e2', amountMinor: 300n }])
-  })
-
-  it('reports surplus beyond the final entry rather than discarding it', () => {
-    const result = allocatePayment(threeEntries(), 1_000n)
-    expect(result.appliedMinor).toBe(900n)
-    expect(result.overpaymentMinor).toBe(100n)
-    expect(result.allocations).toHaveLength(3)
-  })
-
-  it('reports the whole payment as overpayment when nothing is outstanding', () => {
-    const entries = [entry(1, 300n, 300n)]
-    const result = allocatePayment(entries, 50n)
-    expect(result.allocations).toEqual([])
-    expect(result.appliedMinor).toBe(0n)
-    expect(result.overpaymentMinor).toBe(50n)
-  })
-
-  it('orders by sequence regardless of input order', () => {
-    const result = allocatePayment([entry(3, 300n), entry(1, 300n), entry(2, 300n)], 400n)
-    expect(result.allocations).toEqual([
-      { entryId: 'e1', amountMinor: 300n },
-      { entryId: 'e2', amountMinor: 100n }
-    ])
-  })
-
-  it('never emits a zero-amount allocation', () => {
-    const result = allocatePayment(threeEntries(), 600n)
-    expect(result.allocations.every((a) => a.amountMinor > 0n)).toBe(true)
-    expect(result.allocations).toHaveLength(2)
-  })
-
-  it('handles amounts far beyond Int32', () => {
-    const result = allocatePayment([entry(1, 25_000_000_000n)], 25_000_000_000n)
-    expect(result.allocations[0].amountMinor).toBe(25_000_000_000n)
+    // A distinct type from the over-outstanding one: the remedy is "choose
+    // another entry", not "type a smaller figure".
+    expect(failure).toBeInstanceOf(EntrySettledError)
+    expect(failure).not.toBeInstanceOf(OutstandingExceededError)
   })
 
   it('rejects a non-positive payment', () => {
-    expect(() => allocatePayment(threeEntries(), 0n)).toThrow(AllocationError)
-    expect(() => allocatePayment(threeEntries(), -5n)).toThrow(AllocationError)
+    expect(() => allocateToEntry(entry(1, 300n), 0n)).toThrow(AllocationError)
+    expect(() => allocateToEntry(entry(1, 300n), -5n)).toThrow(AllocationError)
   })
 
-  it('rejects an entry overpaid beyond its due amount', () => {
-    expect(() => allocatePayment([entry(1, 300n, 400n)], 10n)).toThrow(AllocationError)
+  it('rejects an entry already paid beyond its due amount', () => {
+    // Unreachable through the services, which cap every payment — but a
+    // hand-repaired row could be in this state, and allocating against it
+    // would compute a negative outstanding and accept anything at all.
+    expect(() => allocateToEntry(entry(1, 300n, 400n), 10n)).toThrow(AllocationError)
   })
 
-  it('does not mutate the input entries', () => {
-    const entries = [entry(3, 300n), entry(1, 300n), entry(2, 300n)]
-    allocatePayment(entries, 900n)
+  it('does not care whether earlier entries are outstanding', () => {
+    // Installment 5, chosen deliberately while 1-4 are unpaid. Ordering is the
+    // schedule's business; a buyer paying ahead is not blocked by arrears.
+    const result = allocateToEntry(entry(5, 300n), 300n)
+    expect(result.allocation).toEqual({ entryId: 'e5', amountMinor: 300n })
+  })
 
-    // Verify the array order is unchanged (would fail if entries.sort() was used instead of [...entries].sort())
-    expect(entries.map((e) => e.id)).toEqual(['e3', 'e1', 'e2'])
-    // Verify entry objects are unchanged
-    expect(entries.map((e) => e.amountPaidMinor)).toEqual([0n, 0n, 0n])
+  it('handles amounts far beyond Int32', () => {
+    const result = allocateToEntry(entry(1, 25_000_000_000n), 25_000_000_000n)
+    expect(result.allocation.amountMinor).toBe(25_000_000_000n)
+  })
+
+  it('does not mutate the entry it was given', () => {
+    const target = entry(1, 300n, 100n)
+    allocateToEntry(target, 200n)
+    expect(target.amountPaidMinor).toBe(100n)
+    expect(target.amountDueMinor).toBe(300n)
+  })
+
+  it('never emits a zero-amount allocation', () => {
+    // The only way to reach zero would be a zero payment, which is refused
+    // above — so every allocation this function returns moves money.
+    const result = allocateToEntry(entry(1, 300n), 1n)
+    expect(result.allocation.amountMinor).toBeGreaterThan(0n)
   })
 })

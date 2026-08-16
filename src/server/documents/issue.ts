@@ -112,7 +112,11 @@ export async function issueReceipt(
   paymentId: string
 ) {
   const doc = await createDocument(tx, { orgId, saleId, type: 'RECEIPT', paymentId })
-  return { documentId: doc.id }
+  // The number, not just the id: the confirmation the agent reads after
+  // recording names the receipt ("Receipt RCP-000031"), and re-reading the row
+  // for it outside this transaction would be a second query for a value that
+  // was just written here.
+  return { documentId: doc.id, number: doc.number }
 }
 
 /**

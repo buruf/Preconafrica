@@ -1,7 +1,9 @@
 'use client'
 
+import { useState } from 'react'
 import { useFormState, useFormStatus } from 'react-dom'
-import { Button, Field, Select } from '@/components/ui'
+import { Button, CONTROL_CLASS, Field, Notice, Select } from '@/components/ui'
+import { toMinor } from '@/domain/currency'
 import { recordPaymentAction } from './actions'
 
 const METHODS: Array<{ value: string; label: string }> = [
@@ -12,55 +14,155 @@ const METHODS: Array<{ value: string; label: string }> = [
   { value: 'OTHER', label: 'Other' }
 ]
 
+/**
+ * One selectable schedule entry, formatted on the server.
+ *
+ * `outstandingMinor` is a decimal *string*, not a bigint: a bigint cannot cross
+ * the server/client boundary at all, and a number would be the one float in a
+ * money path. It is parsed back with `BigInt()` here — lossless in both
+ * directions — and `outstandingLabel` is the same figure already through
+ * `formatMinor` on the server, so the client never formats money either.
+ */
+export interface PayableEntry {
+  id: string
+  /** "Installment 1 — due 2026-09-15 — $3,888.88 outstanding" */
+  label: string
+  /** "Installment 1", for the sentences beside the amount field. */
+  title: string
+  outstandingMinor: string
+  outstandingLabel: string
+}
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
-function SubmitButton() {
+/**
+ * Minor units for what has been typed, or null when it is not yet a number.
+ *
+ * Null is "cannot tell", not "invalid": a half-typed "1." must not disable the
+ * button underneath the person's fingers. The server validates the same string
+ * with the same function, so the two can never disagree about what "1.5" means
+ * in a currency with no decimal places.
+ */
+function typedMinor(amount: string, currency: string): bigint | null {
+  const trimmed = amount.trim()
+  if (!trimmed) return null
+  try {
+    return toMinor(trimmed, currency)
+  } catch {
+    return null
+  }
+}
+
+function SubmitButton({ disabled }: { disabled: boolean }) {
   const { pending } = useFormStatus()
   return (
-    <Button type="submit" disabled={pending} className="w-full sm:w-auto">
+    <Button type="submit" disabled={pending || disabled} className="w-full sm:w-auto">
       {pending ? 'Recording…' : 'Record payment'}
     </Button>
   )
 }
 
 /**
- * The returned message from recordPaymentAction is either a validation/
- * conflict error or the overpayment notice — both must be visible, but they
- * are not the same kind of news, so they get distinct styling rather than
- * both going through the rose-tinted ErrorText box. "Recorded." is the
- * literal prefix the action uses for the overpayment case (see actions.ts).
+ * Recording a payment, under the rule the platform now works by: the money
+ * goes to the one schedule entry the agent picks, and never anywhere else.
+ *
+ * The select is required and has no default. That is the point of it — a
+ * default is a decision the form makes on the agent's behalf, and the whole
+ * reason this screen was rebuilt is that a payment landing somewhere nobody
+ * chose is indistinguishable, to the person reading the schedule afterwards,
+ * from a system inventing money.
+ *
+ * The client-side cap is convenience only. `recordPayment` refuses an
+ * over-outstanding amount on its own, under the sale's row lock, against a
+ * figure read inside the transaction — which is the only place the check can
+ * actually be sound. This one just saves a round trip and says why the button
+ * is dark.
  */
-export function PaymentForm({ saleId }: { saleId: string }) {
-  const [message, formAction] = useFormState(recordPaymentAction, undefined)
-  const isOverpaymentNotice = message?.startsWith('Recorded.') ?? false
+export function PaymentForm({
+  saleId,
+  currency,
+  entries
+}: {
+  saleId: string
+  currency: string
+  entries: PayableEntry[]
+}) {
+  const [result, formAction] = useFormState(recordPaymentAction, undefined)
+  const [entryId, setEntryId] = useState('')
+  const [amount, setAmount] = useState('')
+
+  // Nothing left to pay: an empty select with a required attribute is a form
+  // that can never be submitted and never says why.
+  if (entries.length === 0) {
+    return (
+      <div className="space-y-3">
+        <Notice result={result} />
+        <p className="text-[15px] text-muted">
+          Every entry on this schedule is fully paid — there is nothing left to record a payment
+          against.
+        </p>
+      </div>
+    )
+  }
+
+  const chosen = entries.find((entry) => entry.id === entryId) ?? null
+  const parsed = typedMinor(amount, currency)
+  const exceeds =
+    chosen !== null && parsed !== null && parsed > BigInt(chosen.outstandingMinor)
 
   return (
     <form action={formAction} className="space-y-3">
       <input type="hidden" name="saleId" value={saleId} />
 
-      {message ? (
-        // The two tones come straight out of DESIGN.md's status table: an
-        // overpayment is the "partial / reserved" amber (it worked, but read
-        // this), a failure is the overdue red. Both are the triples, so this
-        // notice cannot end up a slightly different amber from a pill.
-        <p
-          role="status"
-          className={`rounded-btn border px-3 py-2 text-sm ${
-            isOverpaymentNotice
-              ? 'border-status-partial-border bg-status-partial-bg text-status-partial-text'
-              : 'border-status-overdue-border bg-status-overdue-bg text-status-overdue-text'
-          }`}
+      <Notice result={result} />
+
+      <Field label="Applies to" name="scheduleEntryId" required>
+        <Select
+          name="scheduleEntryId"
+          required
+          value={entryId}
+          onChange={(event) => setEntryId(event.target.value)}
         >
-          {message}
-        </p>
-      ) : null}
+          <option value="">Choose which payment this settles…</option>
+          {entries.map((entry) => (
+            <option key={entry.id} value={entry.id}>
+              {entry.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="Amount" name="amount" placeholder="0.00" required />
+        <Field
+          label="Amount"
+          name="amount"
+          required
+          hint={chosen ? `${chosen.title} has ${chosen.outstandingLabel} outstanding` : undefined}
+        >
+          <input
+            name="amount"
+            inputMode="decimal"
+            placeholder="0.00"
+            required
+            value={amount}
+            onChange={(event) => setAmount(event.target.value)}
+            className={CONTROL_CLASS}
+          />
+        </Field>
         <Field label="Date received" name="receivedAt" type="date" defaultValue={todayIso()} required />
       </div>
+
+      {exceeds && chosen ? (
+        // Amber, not red: nothing has failed yet. This is the form telling the
+        // agent what it will refuse if they press the button, in the same tone
+        // a partial payment is drawn in.
+        <p className="rounded-btn border border-status-partial-border bg-status-partial-bg px-3 py-2 text-sm text-status-partial-text">
+          That is more than {chosen.title} still owes. Enter {chosen.outstandingLabel} or less, or
+          record the rest against another entry.
+        </p>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Field label="Method" name="method">
@@ -77,7 +179,7 @@ export function PaymentForm({ saleId }: { saleId: string }) {
 
       <Field label="Note" name="note" placeholder="Optional" />
 
-      <SubmitButton />
+      <SubmitButton disabled={chosen === null || exceeds} />
     </form>
   )
 }
