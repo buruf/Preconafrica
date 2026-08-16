@@ -132,9 +132,9 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
     // resolved within the actor's organisation above. An id belonging to
     // another sale (or another org's sale) therefore matches nothing and comes
     // back NOT_FOUND, the same answer a nonexistent id gets, so a forged id can
-    // neither be applied nor used to probe what exists. Read under the lock,
-    // with the rest of the schedule, so the outstanding figure the cap is
-    // computed from cannot move underneath the decision.
+    // neither be applied nor used to probe what exists. Read under the lock, so
+    // the outstanding figure the cap is computed from cannot move underneath
+    // the decision — only this entry is read, because only this entry moves.
     const entry = await tx.scheduleEntry.findFirst({
       where: { id: input.scheduleEntryId, saleId: sale.id },
       select: { id: true, sequence: true, amountDueMinor: true, amountPaidMinor: true }
@@ -240,9 +240,10 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
   const affectedEntryIds = payment.allocations.map((a) => a.scheduleEntryId)
 
   await prisma.$transaction(async (tx) => {
-    // Same lock as recordPayment, and for the same reason: a void and a
-    // payment racing on one sale corrupt the cascade exactly as two payments
-    // would. Both take the lock, so they queue instead of interleaving.
+    // Same lock as recordPayment, and for the same reason: a void withdrawing
+    // an entry's allocations while a payment computes its cap from that very
+    // entry leaves one of the two working from a total that no longer exists.
+    // Both take the lock, so they queue instead of interleaving.
     await lockSale(tx, payment.saleId)
 
     const locked = await tx.sale.findUniqueOrThrow({
