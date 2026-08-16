@@ -39,7 +39,12 @@ async function render(props: FloorPlanProps): Promise<{ buffer: Buffer; text: st
 
 describe('the floor plan document', () => {
   it('renders a valid PDF with the drawing embedded', async () => {
-    const { buffer, text } = await render({ ...FLOOR_PLAN, logo: LOGO, plan: PLAN })
+    const { buffer, text } = await render({
+      ...FLOOR_PLAN,
+      logo: LOGO,
+      plan: PLAN,
+      planOnFile: true
+    })
 
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
     // A real document, not a stub: the letterhead is on it.
@@ -49,7 +54,7 @@ describe('the floor plan document', () => {
   })
 
   it('renders a valid PDF when the unit has no drawing, and says so', async () => {
-    const { buffer, text } = await render({ ...FLOOR_PLAN, plan: null })
+    const { buffer, text } = await render({ ...FLOOR_PLAN, plan: null, planOnFile: false })
 
     expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
     expect(text).toContain('NO FLOOR PLAN YET')
@@ -59,8 +64,21 @@ describe('the floor plan document', () => {
     expect(text).toContain('UNIT 4C')
   })
 
+  it('does not tell a developer who uploaded a plan that they did not', async () => {
+    // A drawing is on file but could not be embedded — over the PDF image
+    // budget, a format no PDF carries, a URL the SSRF guard refused, a CDN that
+    // has since 404'd. "Nobody has uploaded one" would send them to fix the
+    // wrong thing.
+    const { buffer, text } = await render({ ...FLOOR_PLAN, plan: null, planOnFile: true })
+
+    expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
+    expect(text).toContain('FLOOR PLAN UNAVAILABLE')
+    expect(text).toContain('could not be included in this document')
+    expect(text).not.toContain('NO FLOOR PLAN YET')
+  })
+
   it('identifies the unit: name, floor, bedrooms and size', async () => {
-    const { text } = await render({ ...FLOOR_PLAN, plan: PLAN })
+    const { text } = await render({ ...FLOOR_PLAN, plan: PLAN, planOnFile: true })
 
     expect(text).toContain('UNIT 4C')
     expect(text).toContain('BEDROOMS')
@@ -76,7 +94,7 @@ describe('the floor plan document', () => {
     // Both states, because an empty panel is exactly where a well-meaning
     // "at least show the price" would get added.
     for (const plan of [PLAN, null]) {
-      const { text } = await render({ ...FLOOR_PLAN, plan })
+      const { text } = await render({ ...FLOOR_PLAN, plan, planOnFile: plan !== null })
 
       // No ISO code — this app formats money as `NGN 1,234.00` / `KES 1,234.00`.
       expect(text).not.toMatch(/\b(NGN|KES|USD|GHS|UGX|TZS|ZAR)\b/)
@@ -97,7 +115,12 @@ describe('the floor plan document', () => {
 
   it('stays inside the image budget it is allowed to grow by', async () => {
     const { buffer: bare } = await render({ ...FLOOR_PLAN, plan: null })
-    const { buffer: withPlan } = await render({ ...FLOOR_PLAN, logo: LOGO, plan: PLAN })
+    const { buffer: withPlan } = await render({
+      ...FLOOR_PLAN,
+      logo: LOGO,
+      plan: PLAN,
+      planOnFile: true
+    })
 
     expect(withPlan.length).toBeGreaterThan(bare.length)
     // The drawing and the logo are both capped at MAX_PDF_IMAGE_BYTES by

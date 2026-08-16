@@ -107,7 +107,22 @@ export const IMAGE_PROFILES: Record<UploadKind, Profile> = {
   },
   layout: {
     maxEdge: 2400,
-    budgetBytes: 400 * 1024,
+    // The PDF budget, for the same reason `building` carries it: the plan now
+    // prints in a document of its own, so an image that passes here has to be
+    // an image that embeds there. It used to be 400 kB, which was 400 kB of a
+    // slot nothing outside the browser read — and the moment the floor plan PDF
+    // existed, that gap became a silent failure with the worst possible shape:
+    // the architect's real drawing for the owner's own building stores at
+    // 348 kB, `toPdfImage` refuses anything over 300 kB, and the document a
+    // buyer downloaded then said no plan had been uploaded for a unit that had
+    // one. Better a slightly harder-compressed plan everywhere than a plan that
+    // is only in the browser.
+    //
+    // The ladder below still tries both PNGs at full size first, so a plan that
+    // fits as PNG stays a PNG; a dense one now lands on JPEG at 1800px rather
+    // than PNG at 1800px, which is a format change and not a resolution one —
+    // about 240dpi across an A4 page, with the linework still legible.
+    budgetBytes: MAX_PDF_IMAGE_BYTES,
     ladder: [
       { format: 'png', quality: 90, palette: true },
       { format: 'png', quality: 70, palette: true },

@@ -236,5 +236,6 @@ export const FLOOR_PLAN: FloorPlanProps = {
   bedrooms: 3,
   sizeSqm: '245.00',
   logo: null,
-  plan: null
+  plan: null,
+  planOnFile: false
 }

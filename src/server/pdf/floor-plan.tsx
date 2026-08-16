@@ -71,6 +71,10 @@ export async function renderFloorPlanPdf(
         sizeSqm={unit.sizeSqm.toString()}
         logo={toPdfImage(fetched.logo)}
         plan={toPdfImage(fetched.plan)}
+        // The URL's own presence, not the fetch's outcome — so the empty panel
+        // can tell "nobody has uploaded one" apart from "one is on file and
+        // could not be embedded". See `FloorPlanProps.planOnFile`.
+        planOnFile={Boolean(unit.layoutImageUrl?.trim())}
       />
     )
   }

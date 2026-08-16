@@ -137,6 +137,23 @@ describe('downscaleImage', () => {
   )
 
   it(
+    'produces a floor plan the PDF pipeline will actually accept',
+    async () => {
+      // The twin of the hero case above, and the one that was live: the layout
+      // budget used to be 400 kB while `toPdfImage` refuses anything over 300,
+      // so a dense architectural drawing — the real one for this owner's own
+      // building stores at 348 kB — looked right on the unit page and made the
+      // floor plan PDF say no plan had been uploaded, for a unit that had one.
+      // A plan that passes here must embed there.
+      const input = await planLike(4800, 3400)
+      const out = await downscaleImage(input, 'layout')
+      const embedded = toPdfImage({ bytes: out.bytes, contentType: out.contentType })
+      expect(embedded).not.toBeNull()
+    },
+    30_000
+  )
+
+  it(
     'accepts a WebP upload and stores it as something embeddable',
     async () => {
       const webp = await sharp(await photoLike(1600, 1200)).webp().toBuffer()

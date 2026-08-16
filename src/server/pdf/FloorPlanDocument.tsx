@@ -38,6 +38,19 @@ export interface FloorPlanProps {
    * document says so and the developer uploads one.
    */
   plan: PdfImage | null
+  /**
+   * Whether the unit has a `layoutImageUrl` at all — which is a different
+   * question from whether `plan` above is non-null, and the empty panel must
+   * not conflate them.
+   *
+   * `plan` is null both when nothing has ever been uploaded and when something
+   * was uploaded that could not be embedded: over `MAX_PDF_IMAGE_BYTES`, a
+   * format a PDF cannot carry, a URL the SSRF guard refused, a CDN that has
+   * since 404'd. Printing "no floor plan has been uploaded" in the second case
+   * tells a developer who uploaded one that they did not, and sends them to fix
+   * the wrong thing.
+   */
+  planOnFile: boolean
 }
 
 const day = (value: Date) => value.toISOString().slice(0, 10)
@@ -108,6 +121,14 @@ export function FloorPlanDocument(props: FloorPlanProps) {
         <View style={styles.planPanel}>
           {props.plan ? (
             <Image src={props.plan} style={styles.planImage} />
+          ) : props.planOnFile ? (
+            <>
+              <Text style={styles.planEmptyTitle}>FLOOR PLAN UNAVAILABLE</Text>
+              <Text style={styles.planEmptyNote}>
+                A drawing is on file for this unit but could not be included in this
+                document. Ask {props.orgName} to upload it again.
+              </Text>
+            </>
           ) : (
             <>
               <Text style={styles.planEmptyTitle}>NO FLOOR PLAN YET</Text>
