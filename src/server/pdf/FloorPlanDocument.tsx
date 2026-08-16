@@ -55,6 +55,27 @@ export interface FloorPlanProps {
 
 const day = (value: Date) => value.toISOString().slice(0, 10)
 
+/**
+ * The page's own shape follows the drawing's, not the other way round. Every
+ * architectural floor plan in this product's real source material is
+ * landscape — the owner's drawings are all wide — and letterboxing one into a
+ * portrait panel wastes roughly a third of the available height on the one
+ * document whose entire purpose is being readable. So: landscape when the
+ * drawing is wider than it is tall, portrait otherwise.
+ *
+ * `plan.width`/`plan.height` are only ever set by `toPdfImageWithSize` (see
+ * `@/server/media/images`), which is the one caller in this codebase that
+ * reads a drawing's own pixel size. Undefined dimensions — no drawing at all,
+ * one on file that could not be embedded, or bytes `sharp` could not parse a
+ * header from — all fall to portrait, which is the safe default and also
+ * correct: a page built around an image that is not there should read as
+ * text, not as a wide empty frame.
+ */
+function pageOrientation(plan: PdfImage | null): 'portrait' | 'landscape' {
+  if (!plan || plan.width === undefined || plan.height === undefined) return 'portrait'
+  return plan.width > plan.height ? 'landscape' : 'portrait'
+}
+
 /** One labelled fact in either bordered strip. */
 function Fact({ label, value, width }: { label: string; value: string; width: 'quarter' | 'half' }) {
   return (
@@ -85,12 +106,16 @@ function Fact({ label, value, width }: { label: string; value: string; width: 'q
  * statement and the invoice, which are the documents that state what is owed.
  */
 export function FloorPlanDocument(props: FloorPlanProps) {
+  const orientation = pageOrientation(props.plan)
+  const planPanelStyle = orientation === 'landscape' ? styles.planPanelLandscape : styles.planPanel
+  const planImageStyle = orientation === 'landscape' ? styles.planImageLandscape : styles.planImage
+
   return (
     <Document
       title={`Floor plan — unit ${props.unitName}, ${props.projectName}`}
       author={props.orgName}
     >
-      <Page size="A4" style={styles.page}>
+      <Page size="A4" orientation={orientation} style={styles.page}>
         {/* The same letterhead the other three carry, so this sits with them in
             a buyer's downloads folder. The right-hand identifier is the unit
             rather than a document number: there is no sequence to quote, and
@@ -117,10 +142,15 @@ export function FloorPlanDocument(props: FloorPlanProps) {
           <Fact label="SIZE" value={`${props.sizeSqm} m²`} width="quarter" />
         </View>
 
-        {/* The document. Everything above and below it is a caption. */}
-        <View style={styles.planPanel}>
+        {/* The document. Everything above and below it is a caption. A
+            landscape page is much shorter than it is wide (595pt tall against
+            842), so the panel below is a shorter box on that orientation —
+            see `planPanelLandscape` in styles.ts — never the portrait one
+            stretched sideways, which would push the strip below it onto a
+            second page. */}
+        <View style={planPanelStyle}>
           {props.plan ? (
-            <Image src={props.plan} style={styles.planImage} />
+            <Image src={props.plan} style={planImageStyle} />
           ) : props.planOnFile ? (
             <>
               <Text style={styles.planEmptyTitle}>FLOOR PLAN UNAVAILABLE</Text>

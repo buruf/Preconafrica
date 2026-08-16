@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { FloorPlanDocument, type FloorPlanProps } from '@/server/pdf/FloorPlanDocument'
 import { floorPlanFilename } from '@/domain/units'
 import { MAX_PDF_IMAGE_BYTES, type PdfImage } from '@/server/media/images'
-import { FLOOR_PLAN, LOGO_PNG, extractPdfText, makePng } from '@/server/__tests__/pdf-fixtures'
+import { FLOOR_PLAN, LOGO_PNG, extractPageSize, extractPdfText, makePng } from '@/server/__tests__/pdf-fixtures'
 
 /**
  * The floor plan document, rendered from local fixtures and never from the
@@ -127,6 +127,79 @@ describe('the floor plan document', () => {
     // `toPdfImage` before they ever reach this component, so the page cannot
     // exceed the bare document plus two budgets plus a little structure.
     expect(withPlan.length).toBeLessThan(bare.length + 2 * MAX_PDF_IMAGE_BYTES)
+  })
+})
+
+describe('page orientation follows the drawing, not the other way round', () => {
+  // The rendered page's own /MediaBox is what a reader's viewer actually lays
+  // out, so these assert on it directly rather than on any internal flag —
+  // see @react-pdf's documented point sizes for A4 in either orientation.
+  const A4_PORTRAIT = { width: 595.28, height: 841.89 }
+  const A4_LANDSCAPE = { width: 841.89, height: 595.28 }
+
+  // @react-pdf derives its A4 point size from a mm figure at render time
+  // (595.280029..., not the rounded 595.28 quoted above and in the task's own
+  // spec), so the comparison is to two decimal places rather than exact —
+  // still far tighter than the ~1pt that would mean a genuinely different
+  // page size, and not a weakening of what the assertion actually pins.
+  function expectPageSize(buffer: Buffer, expected: { width: number; height: number }): void {
+    const size = extractPageSize(buffer)
+    expect(size.width).toBeCloseTo(expected.width, 1)
+    expect(size.height).toBeCloseTo(expected.height, 1)
+  }
+
+  // `width`/`height` set by hand rather than through a real sharp decode:
+  // this file exercises `FloorPlanDocument`'s own derivation, which is a pure
+  // function of `plan.width`/`plan.height`. `toPdfImageWithSize` (the thing
+  // that actually reads those off real image bytes via sharp) has its own
+  // coverage in media-fields.test.ts.
+  const WIDE: PdfImage = { data: makePng(20, 3), format: 'png', width: 1600, height: 900 }
+  const TALL: PdfImage = { data: makePng(20, 4), format: 'png', width: 900, height: 1600 }
+  const SQUARE: PdfImage = { data: makePng(20, 5), format: 'png', width: 1000, height: 1000 }
+
+  it('goes landscape for a drawing wider than it is tall', async () => {
+    const { buffer } = await render({ ...FLOOR_PLAN, plan: WIDE, planOnFile: true })
+    expectPageSize(buffer, A4_LANDSCAPE)
+  })
+
+  it('stays portrait for a drawing taller than it is wide', async () => {
+    const { buffer } = await render({ ...FLOOR_PLAN, plan: TALL, planOnFile: true })
+    expectPageSize(buffer, A4_PORTRAIT)
+  })
+
+  it('stays portrait for a square drawing — wider-than-tall is what earns landscape, not equal', async () => {
+    const { buffer } = await render({ ...FLOOR_PLAN, plan: SQUARE, planOnFile: true })
+    expectPageSize(buffer, A4_PORTRAIT)
+  })
+
+  it('stays portrait with no drawing at all — there is nothing to measure, and the page is mostly text', async () => {
+    const { buffer } = await render({ ...FLOOR_PLAN, plan: null, planOnFile: false })
+    expectPageSize(buffer, A4_PORTRAIT)
+  })
+
+  it('stays portrait when a plan is on file but could not be embedded', async () => {
+    const { buffer } = await render({ ...FLOOR_PLAN, plan: null, planOnFile: true })
+    expectPageSize(buffer, A4_PORTRAIT)
+  })
+
+  it('still fits the masthead, the facts and the footer on one landscape page', async () => {
+    // The regression this guards: a landscape page is much shorter than it is
+    // wide (595pt tall against 842), so a panel sized for the portrait page
+    // would push the context strip below it onto a second page.
+    const { buffer, text } = await render({
+      ...FLOOR_PLAN,
+      logo: { data: LOGO_PNG, format: 'png' },
+      plan: WIDE,
+      planOnFile: true
+    })
+
+    expect(buffer.subarray(0, 5).toString('latin1')).toBe('%PDF-')
+    expect(text).not.toMatch(/Page 2 of/)
+    expect(text).toContain('Sunrise Developments')
+    expect(text).toContain('UNIT 4C')
+    expect(text).toContain('245.00 m²')
+    expect(text).toContain('Riverside Drive, Nairobi')
+    expect(text).toContain('2028-06-30')
   })
 })
 

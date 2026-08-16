@@ -2,7 +2,7 @@ import { renderToBuffer } from '@react-pdf/renderer'
 import { prisma } from '@/server/db'
 import { ServiceError } from '@/server/services/errors'
 import { FloorPlanDocument } from '@/server/pdf/FloorPlanDocument'
-import { fetchGuardedImages, toPdfImage } from '@/server/media/images'
+import { fetchGuardedImages, toPdfImage, toPdfImageWithSize } from '@/server/media/images'
 import { floorPlanFilename } from '@/domain/units'
 
 /**
@@ -55,6 +55,13 @@ export async function renderFloorPlanPdf(
     plan: unit.layoutImageUrl
   })
 
+  const logo = toPdfImage(fetched.logo)
+  // `toPdfImageWithSize`, not the plain `toPdfImage` the other three documents
+  // use: the floor plan's page orientation follows the drawing's own aspect
+  // ratio (see `FloorPlanDocument`), and this is the one call in the render
+  // that can read it, off the bytes already fetched above.
+  const plan = await toPdfImageWithSize(fetched.plan)
+
   return {
     filename: floorPlanFilename(unit.name),
     buffer: await renderToBuffer(
@@ -69,8 +76,8 @@ export async function renderFloorPlanPdf(
         // `Decimal` -> string on the server, so nothing but a string reaches the
         // document — the same rule that keeps bigint out of client components.
         sizeSqm={unit.sizeSqm.toString()}
-        logo={toPdfImage(fetched.logo)}
-        plan={toPdfImage(fetched.plan)}
+        logo={logo}
+        plan={plan}
         // The URL's own presence, not the fetch's outcome — so the empty panel
         // can tell "nobody has uploaded one" apart from "one is on file and
         // could not be embedded". See `FloorPlanProps.planOnFile`.

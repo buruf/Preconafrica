@@ -269,6 +269,35 @@ export const styles = StyleSheet.create({
    * and cropping a drawing is exactly what this feature may not do.
    */
   planImage: { width: '100%', height: 538, objectFit: 'contain' },
+
+  /**
+   * The landscape twin of `planPanel` and `planImage` above, used when the
+   * drawing itself is wider than it is tall (see `FloorPlanDocument`). Every
+   * architectural plan in this product's real source material is landscape,
+   * so this is the common case in practice, not the edge one.
+   *
+   * The numbers redo `planPanel`'s arithmetic for a page that is *shorter*, not
+   * narrower: A4 landscape is 595.28pt tall against portrait's 841.89, so the
+   * 752pt of flowing content up there becomes roughly 505pt here (595.28,
+   * less the same 36pt top and 54pt footer margins `page` always takes). The
+   * masthead, the accent rule and the two fact strips do not shrink — nothing
+   * in them is orientation-aware — so they still cost about 196pt between
+   * them, leaving roughly 309pt for the panel. 294 is that with slack for the
+   * same line-height rounding `planPanel`'s comment names, so the plan can
+   * never push the context strip below it onto a second page.
+   */
+  planPanelLandscape: {
+    height: 294,
+    borderWidth: 1,
+    borderColor: LINE,
+    borderRadius: 3,
+    backgroundColor: PAGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginBottom: 12
+  },
+  planImageLandscape: { width: '100%', height: 292, objectFit: 'contain' },
   planEmptyTitle: {
     fontSize: TYPE.heading,
     fontFamily: BOLD,

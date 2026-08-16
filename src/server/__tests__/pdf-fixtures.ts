@@ -98,27 +98,32 @@ function chunk(type: string, data: Buffer): Buffer {
 }
 
 /**
- * A genuinely valid 8-bit RGB PNG of `side`×`side`, with deliberately
+ * A genuinely valid 8-bit RGB PNG of `width`×`height`, with deliberately
  * incompressible pixels so the encoded size is realistic rather than a few
  * hundred bytes of run-length. It has to be really valid: @react-pdf's decoder
  * throws inside a zlib callback on a bad CRC, which takes the process down
  * rather than failing a test.
+ *
+ * `makePng` below is this at `width === height`; this rectangular form exists
+ * for the orientation tests, which need a real IHDR that `sharp` (via
+ * `toPdfImageWithSize`) can actually read a non-square size off of, not just a
+ * fixture whose `width`/`height` fields are set by hand.
  */
-export function makePng(side: number, seed = 1): Buffer {
-  const raw = Buffer.alloc(side * (side * 3 + 1))
+export function makeRectPng(width: number, height: number, seed = 1): Buffer {
+  const raw = Buffer.alloc(height * (width * 3 + 1))
   let state = seed
-  for (let y = 0; y < side; y += 1) {
-    const rowStart = y * (side * 3 + 1)
+  for (let y = 0; y < height; y += 1) {
+    const rowStart = y * (width * 3 + 1)
     raw[rowStart] = 0 // filter: none
-    for (let x = 0; x < side * 3; x += 1) {
+    for (let x = 0; x < width * 3; x += 1) {
       state = (state * 1103515245 + 12345) & 0x7fffffff
       raw[rowStart + 1 + x] = (state >>> 16) & 0xff
     }
   }
 
   const ihdr = Buffer.alloc(13)
-  ihdr.writeUInt32BE(side, 0)
-  ihdr.writeUInt32BE(side, 4)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
   ihdr[8] = 8 // bit depth
   ihdr[9] = 2 // colour type: truecolour
   return Buffer.concat([
@@ -129,12 +134,32 @@ export function makePng(side: number, seed = 1): Buffer {
   ])
 }
 
+/** `makeRectPng` at `side`×`side` — the shape every existing fixture wants. */
+export function makePng(side: number, seed = 1): Buffer {
+  return makeRectPng(side, side, seed)
+}
+
 /**
  * A logo of about the size a real one is — roughly 10 kB, which is the figure
  * the letterhead change was costed against. 56×56 is also about what the 46pt
  * masthead slot needs at print resolution.
  */
 export const LOGO_PNG = makePng(56)
+
+/**
+ * The page's own `/MediaBox`, in points — what a reader's PDF viewer actually
+ * lays the page out as, and the only honest way to assert a page-orientation
+ * decision. It lives in the page object's own dictionary, never inside a
+ * Flate-compressed content stream, so unlike `extractPdfText` this needs no
+ * inflate — a plain string search finds it.
+ */
+export function extractPageSize(buffer: Buffer): { width: number; height: number } {
+  const latin = buffer.toString('latin1')
+  const match = /\/MediaBox\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(latin)
+  if (!match) throw new Error('No /MediaBox found in this PDF')
+  const [x0, y0, x1, y1] = match.slice(1, 5).map(Number)
+  return { width: x1 - x0, height: y1 - y0 }
+}
 
 export const INVOICE: InvoiceProps = {
   number: 'INV-000042',
