@@ -92,6 +92,7 @@ export default async function SellUnitPage({
           about. */}
       <Card className="mb-5">
         <UnitImagery
+          unitId={unit.id}
           unitName={unit.name}
           projectName={unit.project.name}
           layoutImageUrl={unit.layoutImageUrl}

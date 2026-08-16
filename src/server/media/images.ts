@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises'
+import sharp from 'sharp'
 import { checkImageUrl, isBlockedAddress } from '@/domain/media'
 import { sniffImageFormat } from '@/domain/uploads'
 
@@ -45,6 +46,16 @@ export interface FetchedImage {
 export interface PdfImage {
   data: Buffer
   format: 'png' | 'jpg'
+  /**
+   * Pixel dimensions, set only by `toPdfImageWithSize`. A logo and a hero
+   * photo are always drawn into a box of one fixed shape, so `toPdfImage`
+   * never reads these and every other document leaves them undefined. The
+   * floor plan is the one document whose page orientation follows the
+   * drawing's own shape — see `FloorPlanDocument` — so it is the one caller
+   * that needs them.
+   */
+  width?: number
+  height?: number
 }
 
 /**
@@ -289,4 +300,43 @@ export function toPdfImage(image: FetchedImage | null): PdfImage | null {
 /** `fetchGuardedImage` + `toPdfImage`, which is what every PDF caller wants. */
 export async function fetchPdfImage(raw: string | null | undefined): Promise<PdfImage | null> {
   return toPdfImage(await fetchGuardedImage(raw))
+}
+
+/**
+ * `toPdfImage`, plus the drawing's own pixel size, read via `sharp` — the
+ * same library `downscaleImage` already uses to measure and encode every
+ * upload (see `@/server/media/downscale`), rather than a second mechanism
+ * invented just for this. `sharp().metadata()` parses only the header, not
+ * the pixels, so this is not a second decode of the image: @react-pdf still
+ * does the one real decode, at draw time, exactly as it would without this
+ * call. The image is fetched once by `fetchGuardedImages` either way; this
+ * only adds one cheap header read on bytes already in memory.
+ *
+ * Exists for the floor plan alone, which is the one document whose page
+ * orientation depends on the drawing's own aspect ratio — landscape when it
+ * is wider than it is tall, portrait otherwise (see `FloorPlanDocument`). A
+ * logo or a hero photo is drawn into a box of one fixed shape regardless of
+ * its own, so nothing else needs this and every other caller keeps using the
+ * plain `toPdfImage` above.
+ *
+ * `width`/`height` are left unset — not the image dropped — when the bytes
+ * pass `toPdfImage`'s PNG/JPEG signature sniff but `sharp` still cannot parse
+ * a header from them: a four-byte signature is not a decodable file. The
+ * caller falls back to portrait, the safe default, rather than a plan that
+ * would otherwise have embedded being refused purely over a shape nothing
+ * could measure.
+ */
+export async function toPdfImageWithSize(image: FetchedImage | null): Promise<PdfImage | null> {
+  const embedded = toPdfImage(image)
+  if (!embedded) return null
+
+  try {
+    const meta = await sharp(embedded.data).metadata()
+    if (meta.width && meta.height) {
+      return { ...embedded, width: meta.width, height: meta.height }
+    }
+  } catch {
+    // Falls through and returns the image without dimensions — see above.
+  }
+  return embedded
 }

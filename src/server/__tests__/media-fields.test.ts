@@ -3,7 +3,8 @@ import { ImageUrlField, RenderUrlsField, imageFieldFrom } from '@/server/service
 import { UpdateUnitSchema } from '@/server/services/units'
 import { UpdateProjectImagerySchema } from '@/server/services/projects'
 import { UpdateOrganizationSchema } from '@/server/services/team'
-import { MAX_IMAGE_BYTES, fetchGuardedImage, fetchPdfImage, toPdfImage } from '@/server/media/images'
+import { MAX_IMAGE_BYTES, fetchGuardedImage, fetchPdfImage, toPdfImage, toPdfImageWithSize } from '@/server/media/images'
+import { makeRectPng } from '@/server/__tests__/pdf-fixtures'
 
 /** A real PNG signature — the sniff reads the bytes, so fixtures must be honest. */
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
@@ -375,5 +376,41 @@ describe('toPdfImage', () => {
     // format sniff — the two rules have to be testable apart.
     const huge = { bytes: Buffer.concat([PNG, Buffer.alloc(400 * 1024)]), contentType: 'image/png' }
     expect(toPdfImage(huge)).toBeNull()
+  })
+})
+
+describe('toPdfImageWithSize', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it("reads width and height off the drawing's own header, via sharp", async () => {
+    const wide = makeRectPng(160, 90, 11)
+    await expect(toPdfImageWithSize({ bytes: wide, contentType: 'image/png' })).resolves.toEqual({
+      data: wide,
+      format: 'png',
+      width: 160,
+      height: 90
+    })
+  })
+
+  it('agrees with the plain toPdfImage on which bytes are embeddable at all', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await expect(toPdfImageWithSize(null)).resolves.toBeNull()
+    // WebP is fetchable but not embeddable — the format sniff refuses this
+    // before sharp is ever asked for a size.
+    await expect(toPdfImageWithSize({ bytes: WEBP, contentType: 'image/webp' })).resolves.toBeNull()
+    // Over the document budget — the byte cap refuses this before sharp runs.
+    const huge = { bytes: Buffer.concat([PNG, Buffer.alloc(400 * 1024)]), contentType: 'image/png' }
+    await expect(toPdfImageWithSize(huge)).resolves.toBeNull()
+  })
+
+  it('embeds the image without a size, rather than dropping it, when the bytes pass the sniff but sharp cannot parse a header', async () => {
+    // `PNG` above is a genuine signature with no real IHDR data behind it —
+    // exactly the shape a truncated upload takes. The format sniff only reads
+    // the first bytes and passes it; sharp needs the rest and cannot.
+    await expect(toPdfImageWithSize({ bytes: PNG, contentType: 'image/png' })).resolves.toEqual({
+      data: PNG,
+      format: 'png'
+    })
   })
 })

@@ -219,6 +219,95 @@ export const styles = StyleSheet.create({
     color: MUTED
   },
 
+  // ── Floor plan ────────────────────────────────────────────────────────────
+  /**
+   * The floor plan document is the one page here whose *point* is an image, so
+   * its geometry is the inverse of every other document's: the facts are a thin
+   * strip and the drawing takes what is left.
+   *
+   * The numbers are not arbitrary. An A4 page is 842pt tall; `page` above takes
+   * 36 off the top and 54 off the bottom, leaving 752. The masthead is 46 (the
+   * logo slot), the accent rule with its margins is 30, and the two bordered
+   * strips are about 46 each with their margins — 192 in total, which leaves
+   * roughly 560 for the drawing. 540 is that, less a little slack for
+   * line-height rounding, so a plan can never push the context strip onto a
+   * second page.
+   */
+  planStrip: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: LINE,
+    borderRadius: 3,
+    backgroundColor: PAGE,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 12
+  },
+  /** Four across on the unit strip, two on the context strip below the plan. */
+  planCellQuarter: { width: '25%' },
+  planCellHalf: { width: '50%' },
+  planFact: { fontSize: TYPE.docNumber, fontFamily: BOLD },
+  /**
+   * The drawing's frame. A fixed height, like `heroBand`, so the page below it
+   * does not move depending on whether a plan happened to be uploaded — and so
+   * the empty state occupies exactly the space the real thing will.
+   */
+  planPanel: {
+    height: 540,
+    borderWidth: 1,
+    borderColor: LINE,
+    borderRadius: 3,
+    backgroundColor: PAGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginBottom: 12
+  },
+  /**
+   * `contain`, never `cover`. A floor plan cropped to fill a frame is a floor
+   * plan with rooms missing, which is worse than the letterboxing around it —
+   * and cropping a drawing is exactly what this feature may not do.
+   */
+  planImage: { width: '100%', height: 538, objectFit: 'contain' },
+
+  /**
+   * The landscape twin of `planPanel` and `planImage` above, used when the
+   * drawing itself is wider than it is tall (see `FloorPlanDocument`). Every
+   * architectural plan in this product's real source material is landscape,
+   * so this is the common case in practice, not the edge one.
+   *
+   * The numbers redo `planPanel`'s arithmetic for a page that is *shorter*, not
+   * narrower: A4 landscape is 595.28pt tall against portrait's 841.89, so the
+   * 752pt of flowing content up there becomes roughly 505pt here (595.28,
+   * less the same 36pt top and 54pt footer margins `page` always takes). The
+   * masthead, the accent rule and the two fact strips do not shrink — nothing
+   * in them is orientation-aware — so they still cost about 196pt between
+   * them, leaving roughly 309pt for the panel. 294 is that with slack for the
+   * same line-height rounding `planPanel`'s comment names, so the plan can
+   * never push the context strip below it onto a second page.
+   */
+  planPanelLandscape: {
+    height: 294,
+    borderWidth: 1,
+    borderColor: LINE,
+    borderRadius: 3,
+    backgroundColor: PAGE,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    marginBottom: 12
+  },
+  planImageLandscape: { width: '100%', height: 292, objectFit: 'contain' },
+  planEmptyTitle: {
+    fontSize: TYPE.heading,
+    fontFamily: BOLD,
+    letterSpacing: 0.6,
+    color: MUTED,
+    marginBottom: 6
+  },
+  /** Wrapped narrow and centred so the empty panel reads as a note, not a wall. */
+  planEmptyNote: { width: '70%', textAlign: 'center', color: MUTED },
+
   // ── Blocks ────────────────────────────────────────────────────────────────
   /** Small, spaced, grey: reads as a heading without needing a second size up. */
   blockTitle: {
