@@ -50,6 +50,44 @@ vi.mock('@/server/notifications/sender', () => ({
   getSender: () => ({ send })
 }))
 
+/**
+ * The rate limiter's storage, mocked like every other dependency under the
+ * action — `@/server/rate-limit` is a Postgres round trip, and this file mocks
+ * what is under the action so it can be about what the action does with the
+ * answers. Nothing about the assertions below changed to accommodate it: the
+ * four guarantees at the top of this file are still asserted exactly as they
+ * were, and the limiter's own arithmetic, keys, atomicity and fail-open
+ * behaviour are covered against a fake table in rate-limit.test.ts.
+ *
+ * The *scope builders* are deliberately not mocked. They are pure and live in
+ * `@/domain/rate-limit`, so the action still constructs its real counter keys
+ * here — which is what lets the enumeration test below assert that those keys
+ * are built from the address as typed and never from a lookup.
+ */
+const limiter = { allowed: true, retryAfterMs: 0 }
+/** The counter keys the action asked about, in call order. */
+const gateKeys: string[][] = []
+const recordedKeys: string[][] = []
+
+vi.mock('@/server/rate-limit', async () => {
+  const domain = await import('@/domain/rate-limit')
+  const keysOf = (scopes: readonly { key: string }[]) => scopes.map((scope) => scope.key)
+  return {
+    RATE_LIMIT_MESSAGE: domain.RATE_LIMIT_MESSAGE,
+    clientIp: () => '198.51.100.7',
+    checkRateLimit: async (scopes: readonly { key: string }[]) => {
+      gateKeys.push(keysOf(scopes))
+      return { ...limiter }
+    },
+    recordRateLimitHit: async (scopes: readonly { key: string }[]) => {
+      recordedKeys.push(keysOf(scopes))
+      return { ...limiter }
+    }
+  }
+})
+
+const { RATE_LIMIT_MESSAGE } = await import('@/domain/rate-limit')
+
 const requireUser = vi.fn()
 const signOut = vi.fn(async (_options?: { redirectTo?: string }) => undefined)
 
@@ -94,6 +132,10 @@ async function runForgot(email: string): Promise<{ redirected: string | null; re
 
 beforeEach(() => {
   redirects.length = 0
+  limiter.allowed = true
+  limiter.retryAfterMs = 0
+  gateKeys.length = 0
+  recordedKeys.length = 0
   requestPasswordReset.mockReset()
   changePassword.mockReset()
   ensureEmailSender.mockReset()
@@ -206,6 +248,56 @@ describe('requestPasswordResetAction', () => {
     })
 
     expect(real).toBe(unknown)
+  })
+
+  it('refuses with one plain sentence once the budget is spent', async () => {
+    limiter.allowed = false
+    limiter.retryAfterMs = 42_000
+
+    const outcome = await runForgot('chidi@sunrise.test')
+
+    expect(outcome.returned).toBe('Too many attempts. Please wait a minute and try again.')
+    expect(outcome.returned).toBe(RATE_LIMIT_MESSAGE)
+    expect(outcome.redirected).toBeNull()
+    // Refused before anything was read, so the throttle costs no work and
+    // cannot be timed against the work it skipped.
+    expect(requestPasswordReset).not.toHaveBeenCalled()
+    expect(recordedKeys).toHaveLength(0)
+  })
+
+  it('throttles a registered and an unregistered address identically', async () => {
+    // The property the whole flow is built on, applied to the one exit the
+    // limiter added. A throttle that fired only for real accounts — or fired
+    // for both but said something different — would be precisely the
+    // account-existence oracle the identical redirect above exists to remove.
+    limiter.allowed = false
+
+    const real = await runForgot('chidi@sunrise.test')
+    const invented = await runForgot('nobody-at-all@nowhere.invalid')
+
+    expect(invented).toEqual(real)
+    // And nothing was looked up on either path: the counters are keyed on what
+    // was typed, so the answer cannot depend on what the database holds.
+    expect(requestPasswordReset).not.toHaveBeenCalled()
+    expect(gateKeys).toHaveLength(2)
+    expect(gateKeys[0]).not.toEqual(gateKeys[1])
+  })
+
+  it('counts a request that sent no email exactly like one that did', async () => {
+    // A counter that only advanced for addresses with accounts would announce
+    // which addresses those are, one attempt sooner every time.
+    requestPasswordReset.mockResolvedValueOnce({
+      resetUrl: 'https://precon.test/reset-password?token=abc',
+      fullName: 'Chidi Okeke'
+    })
+    await runForgot('chidi@sunrise.test')
+    requestPasswordReset.mockResolvedValueOnce({ resetUrl: null, fullName: null })
+    await runForgot('chidi@sunrise.test')
+
+    expect(recordedKeys).toHaveLength(2)
+    expect(recordedKeys[1]).toEqual(recordedKeys[0])
+    // Counted before the service ran, so a request that throws is counted too.
+    expect(recordedKeys[0]).toEqual(gateKeys[0])
   })
 
   it('rejects a malformed address without touching the service', async () => {

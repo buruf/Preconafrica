@@ -1,6 +1,13 @@
 'use server'
 
 import { redirect } from 'next/navigation'
+import { buyerRegistrationScopes } from '@/domain/rate-limit'
+import {
+  RATE_LIMIT_MESSAGE,
+  checkRateLimit,
+  clientIp,
+  recordRateLimitHit
+} from '@/server/rate-limit'
 import { requireStaff } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import {
@@ -112,6 +119,24 @@ export async function previewSaleAction(
     if (!parsed.success) {
       return parsed.error.issues[0]?.message ?? 'Please check the buyer details.'
     }
+
+    /**
+     * This branch creates a User row, so it is throttled like every other
+     * account-creating surface — but keyed on the acting staff member rather
+     * than on anything the form supplied. It sits behind `requireStaff`, so
+     * this is not an anonymous attack surface; it is a bound on how fast a
+     * stolen or scripted staff session can fill the user table, set generously
+     * enough (10 a minute, 60 an hour) that an agent registering walk-ins all
+     * morning never meets it.
+     *
+     * Checked and counted after validation, so a mistyped phone number does
+     * not spend an agent's budget on a form that was never going to write
+     * anything.
+     */
+    const registrationScopes = buyerRegistrationScopes(actor.userId, clientIp())
+    const gate = await checkRateLimit(registrationScopes, new Date())
+    if (!gate.allowed) return RATE_LIMIT_MESSAGE
+    await recordRateLimitHit(registrationScopes, new Date())
 
     try {
       const registered = await registerBuyer(actor.orgId, parsed.data)
