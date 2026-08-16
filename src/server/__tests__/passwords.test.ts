@@ -37,6 +37,13 @@ function record<T>(op: string, result: T) {
   }
 }
 
+/**
+ * The columns the two password services now select purely so their audit entry
+ * can name an actor. They belong to the row, not to any one test, so the fake
+ * client adds them to whatever a test's fixture supplies.
+ */
+const AUDIT_DEFAULTS = { orgId: 'org_1', fullName: 'Ada Okafor', role: 'ADMIN' as const }
+
 /** Mutable per-test fixtures the mocked client reads from. */
 const state = {
   user: null as { id: string; fullName: string; disabledAt: Date | null } | null,
@@ -76,7 +83,12 @@ vi.mock('@/server/db', () => ({
       findUnique: vi.fn(async (args: { select?: Record<string, boolean> }) => {
         calls.push({ op: 'user.findUnique', args })
         // changePassword selects the hash; requestPasswordReset does not.
-        return args.select?.passwordHash ? state.userForChange : state.user
+        const row = args.select?.passwordHash ? state.userForChange : state.user
+        // `changePassword` also selects the three columns its audit entry needs
+        // (the actor is the account, not a session). Supplied here rather than
+        // in every fixture, because they are columns of the row, not a property
+        // of any individual test.
+        return row === null ? null : { ...AUDIT_DEFAULTS, ...row }
       })
     },
     passwordResetToken: {
@@ -86,7 +98,12 @@ vi.mock('@/server/db', () => ({
       }),
       findUnique: vi.fn(async (args: unknown) => {
         calls.push({ op: 'passwordResetToken.findUnique', args })
-        return state.token
+        // Same as above: `resetPassword` selects the account's org, name and
+        // role for the audit entry, because a reset has no session to take an
+        // actor from.
+        return state.token === null
+          ? null
+          : { ...state.token, user: { ...AUDIT_DEFAULTS, ...state.token.user } }
       }),
       deleteMany: vi.fn(async (args: unknown) => {
         calls.push({ op: 'passwordResetToken.deleteMany', args })
@@ -123,6 +140,16 @@ vi.mock('@/server/db', () => ({
           updateMany: async (args: unknown) => {
             calls.push({ op: 'tx.user.updateMany', args })
             return { count: state.userWriteCount }
+          }
+        },
+        // Both password writes record an entry in the same transaction as the
+        // hash, so a fake transaction has to offer this table. It lands in the
+        // same ordered call list, which is what makes "recorded inside the
+        // transaction, after the write succeeded" assertable below.
+        auditEntry: {
+          create: async (args: { data: unknown }) => {
+            calls.push({ op: 'tx.auditEntry.create', args: args.data })
+            return args.data
           }
         }
       }
@@ -570,5 +597,118 @@ describe('changePassword', () => {
     await expect(
       changePassword('usr_1', 'password123', 'newpassword456', NOW)
     ).rejects.toThrow(ServiceError)
+  })
+})
+
+/**
+ * A password change is a change to who can act, so it belongs in the audit log
+ * — and the two ways it can happen are different events with different proofs
+ * behind them. A change proved knowledge of the old password; a reset proved
+ * control of the mailbox. After an incident, which one happened is the question.
+ *
+ * What is deliberately *not* recorded is anything about either password. The
+ * entry says a reset happened, to whom, and when.
+ */
+describe('password changes are audited', () => {
+  const RAW_TOKEN = 'a-raw-token-value'
+
+  function auditWrites() {
+    return callsOf('tx.auditEntry.create').map((call) => call.args as Record<string, unknown>)
+  }
+
+  it('records a self-service change, attributed to the account itself', async () => {
+    state.userForChange = { passwordHash: await bcrypt.hash('password123', 10), disabledAt: null }
+
+    await changePassword('usr_1', 'password123', 'newpassword456', NOW)
+
+    const [entry] = auditWrites()
+    expect(entry).toBeDefined()
+    expect(entry.action).toBe('user.password_changed')
+    expect(entry.entityType).toBe('User')
+    expect(entry.entityId).toBe('usr_1')
+    expect(entry.actorUserId).toBe('usr_1')
+    expect(entry.orgId).toBe('org_1')
+  })
+
+  it('records a reset with the emailed link, attributed to the account itself', async () => {
+    // No session exists on this path — the token is the proof — so the actor
+    // comes from the account the token belongs to.
+    state.token = {
+      id: 'tok_1',
+      userId: 'usr_1',
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      usedAt: null,
+      user: { disabledAt: null }
+    }
+
+    await resetPassword(RAW_TOKEN, 'newpassword123', NOW)
+
+    const [entry] = auditWrites()
+    expect(entry).toBeDefined()
+    expect(entry.action).toBe('user.password_reset')
+    expect(entry.entityId).toBe('usr_1')
+    expect(entry.actorUserId).toBe('usr_1')
+  })
+
+  it('records the entry inside the transaction, after the password actually landed', async () => {
+    state.token = {
+      id: 'tok_1',
+      userId: 'usr_1',
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      usedAt: null,
+      user: { disabledAt: null }
+    }
+
+    await resetPassword(RAW_TOKEN, 'newpassword123', NOW)
+
+    const ops = calls.map((call) => call.op)
+    expect(ops.indexOf('tx.user.updateMany')).toBeLessThan(ops.indexOf('tx.auditEntry.create'))
+    expect(ops.indexOf('$transaction')).toBeLessThan(ops.indexOf('tx.auditEntry.create'))
+  })
+
+  it('records neither password, in either direction', async () => {
+    state.userForChange = { passwordHash: await bcrypt.hash('password123', 10), disabledAt: null }
+
+    await changePassword('usr_1', 'password123', 'newpassword456', NOW)
+
+    const serialised = JSON.stringify(auditWrites())
+    expect(serialised).not.toContain('password123')
+    expect(serialised).not.toContain('newpassword456')
+    expect(serialised).not.toContain('$2a$')
+  })
+
+  it('records nothing when a reset is refused', async () => {
+    // The account was deactivated mid-flight, so the conditional write matched
+    // nothing and the transaction rolled back. An attempt is not history.
+    state.token = {
+      id: 'tok_1',
+      userId: 'usr_1',
+      expiresAt: new Date(NOW.getTime() + 60_000),
+      usedAt: null,
+      user: { disabledAt: null }
+    }
+    state.userWriteCount = 0
+
+    await expect(resetPassword(RAW_TOKEN, 'newpassword123', NOW)).rejects.toThrow()
+    expect(auditWrites()).toHaveLength(0)
+  })
+
+  it('records nothing when the current password was wrong', async () => {
+    state.userForChange = { passwordHash: await bcrypt.hash('password123', 10), disabledAt: null }
+
+    await expect(changePassword('usr_1', 'wrongpassword', 'newpassword456', NOW)).rejects.toThrow()
+    expect(auditWrites()).toHaveLength(0)
+  })
+
+  it('records nothing merely for asking for a reset link', async () => {
+    // Requesting a link changes nothing about who can act — the password is
+    // untouched until the link is spent — so there is no event to record. It is
+    // also the one path that must never behave differently for a real address
+    // than for an invented one, and an audit write would be a difference.
+    state.user = { id: 'usr_1', fullName: 'Chidi Okeke', disabledAt: null }
+
+    await requestPasswordReset('chidi@sunrise.test', NOW)
+
+    expect(auditWrites()).toHaveLength(0)
   })
 })

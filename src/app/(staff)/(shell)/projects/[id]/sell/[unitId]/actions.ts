@@ -139,7 +139,10 @@ export async function previewSaleAction(
     await recordRateLimitHit(registrationScopes, new Date())
 
     try {
-      const registered = await registerBuyer(actor.orgId, parsed.data)
+      // The whole actor now, not just their org: registering a buyer creates a
+      // sign-in account, and the log records who created it. The organisation
+      // still comes from the session and from nowhere else.
+      const registered = await registerBuyer(actor, parsed.data)
       buyerId = registered.buyerId
     } catch (error) {
       // The likely failure is a duplicate email — an agent registering someone

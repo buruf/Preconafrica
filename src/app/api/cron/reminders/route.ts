@@ -42,6 +42,23 @@ export async function GET(request: Request) {
   // way. Reaping it only when the mail provider happens to be configured would
   // mean the table grows without bound in exactly the incident that fills it.
   const rateLimitHitsPurged = await purgeExpiredRateLimitHits(now)
+
+  // ── Do not add a third purge here for AuditEntry. ────────────────────────
+  //
+  // The two above are throwaway state: a spent reset token grants nothing and a
+  // closed rate-limit window counts nothing, so deleting them changes no answer
+  // this system can give. Audit entries are the exact opposite — they are the
+  // one table whose whole value is that it still holds what happened four years
+  // ago, and "who voided that payment in 2026" is a question somebody will ask
+  // in 2030. Growth is no argument either: a busy organisation writes on the
+  // order of a thousand entries a month, which is megabytes a decade.
+  //
+  // The note is here rather than only in the schema because here is where the
+  // mistake would be made — by someone adding housekeeping to the housekeeping
+  // job, by analogy with the two lines above. The database refuses the DELETE
+  // regardless (prisma/audit-immutability.sql), so the analogy fails loudly
+  // rather than quietly; this is so nobody spends an afternoon finding out why.
+  // ────────────────────────────────────────────────────────────────────────
   const tally = await runReminderSweep(now)
 
   return NextResponse.json({ ok: true, ...tally, resetTokensPurged, rateLimitHitsPurged })

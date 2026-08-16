@@ -63,9 +63,18 @@ export default async function ProfilePage() {
         </ButtonLink>
 
         {actor.role === 'ADMIN' ? (
-          <ButtonLink href="/team" variant="secondary" className="w-full sm:w-auto">
-            Team &amp; organisation
-          </ButtonLink>
+          <>
+            <ButtonLink href="/team" variant="secondary" className="w-full sm:w-auto">
+              Team &amp; organisation
+            </ButtonLink>
+            {/* Beside Team, and here for the same reason Team is: it is
+                occasional org administration, and an admin-only fifth tab would
+                make an admin's nav a different shape from an agent's on the
+                same screens. See src/components/nav.ts. */}
+            <ButtonLink href="/audit" variant="secondary" className="w-full sm:w-auto">
+              Audit log
+            </ButtonLink>
+          </>
         ) : null}
       </div>
 

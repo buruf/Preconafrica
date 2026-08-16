@@ -7,6 +7,8 @@ import { ImageUrlField, RenderUrlsField } from '@/server/services/media'
 import { deleteReplacedBlobs } from '@/server/media/blob'
 import { toMinor } from '@/domain/currency'
 import type { InstallmentFeeMode } from '@/domain/schedule'
+import { recordAudit } from '@/server/audit/record'
+import { diffValues, image, money, number, text, type AuditFields } from '@/domain/audit'
 
 /**
  * Shared with projects.ts's `defaultSizeSqm` — one pattern, one message, so
@@ -152,6 +154,44 @@ export const UpdateUnitSchema = z.object({
   renderImageUrls: RenderUrlsField.optional()
 })
 
+/**
+ * A unit's auditable state, in the tagged values the log diffs.
+ *
+ * One function for both sides of the comparison, so "before" and "after" can
+ * never be built out of different field sets — which is how a diff quietly
+ * stops reporting a field. `sizeSqm` is a Prisma `Decimal`, so it is compared
+ * as its own string rather than as a float; `renderImageUrls` is compared as a
+ * count, because "3 renders → 2 renders" is what a reader wants and a list of
+ * signed blob URLs is not.
+ *
+ * `status` is in the set even though `UpdateUnitSchema` cannot change it today.
+ * That is the point: the day a status control appears on the unit form, it is
+ * audited because it was already being compared, rather than because somebody
+ * remembered to come back here.
+ */
+function auditFieldsForUnit(
+  unit: {
+    name: string
+    bedrooms: number
+    sizeSqm: { toString(): string }
+    priceMinor: bigint
+    status: UnitStatus
+    layoutImageUrl: string | null
+    renderImageUrls: string[]
+  },
+  currency: string
+): AuditFields {
+  return {
+    name: text(unit.name),
+    priceMinor: money(unit.priceMinor, currency),
+    bedrooms: number(unit.bedrooms),
+    sizeSqm: text(unit.sizeSqm.toString()),
+    status: { kind: 'enum', value: unit.status },
+    layoutImageUrl: image(unit.layoutImageUrl),
+    renderImageUrls: number(unit.renderImageUrls.length)
+  }
+}
+
 export async function updateUnit(
   actor: SessionActor,
   unitId: string,
@@ -187,7 +227,46 @@ export async function updateUnit(
 
   let updated
   try {
-    updated = await prisma.unit.update({ where: { id: unitId }, data })
+    // The update and its audit entry commit together. Before this, `updateUnit`
+    // was a bare `prisma.unit.update`; wrapping it changes nothing a caller can
+    // observe — the same row is returned, and a P2002 still escapes to be
+    // translated below — but it makes "a price changed with no record of who
+    // changed it" unreachable rather than merely unlikely.
+    updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.unit.update({ where: { id: unitId }, data })
+
+      // Only what moved. `diffValues` compares the two states field by field,
+      // so an admin who saves the form having edited nothing but the bedrooms
+      // gets an entry that says bedrooms and nothing else — which is the whole
+      // difference between a log people read and a log people ignore.
+      const before: AuditFields = auditFieldsForUnit(unit, unit.project.currency)
+      const after: AuditFields = auditFieldsForUnit(row, unit.project.currency)
+      const changes = diffValues(before, after)
+
+      // A save that changed nothing is not an event. Recording it would fill
+      // the largest table in the database with rows that say "somebody pressed
+      // Save", which is exactly the noise automatic capture was rejected for.
+      if (changes.length > 0) {
+        await recordAudit(tx, actor, {
+          action: 'unit.updated',
+          entityType: 'Unit',
+          entityId: row.id,
+          // The name *after* the edit, so a renamed unit's entry names what it
+          // became. The rename itself is in `changes`, which is where the old
+          // name is preserved.
+          entityLabel: row.name,
+          changes,
+          context: {
+            projectId: row.projectId,
+            unitId: row.id,
+            unitName: row.name,
+            currency: unit.project.currency
+          }
+        })
+      }
+
+      return row
+    })
   } catch (error) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&

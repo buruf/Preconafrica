@@ -13,6 +13,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "predev": "node scripts/which-db.mjs",
     "predb:push": "node scripts/which-db.mjs",
+    "postdb:push": "node scripts/ensure-audit-immutability.mjs",
     "db:which": "node scripts/which-db.mjs"
   },
   "prisma": {

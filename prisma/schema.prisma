@@ -444,3 +444,104 @@ model RateLimitHit {
 
   @@index([expiresAt])
 }
+
+/// The system of record's memory: who changed money, inventory or access, what
+/// they changed it from and to, and when.
+///
+/// This exists because the questions a system of record exists to answer — who
+/// changed that unit's price, who voided that payment, who cancelled that sale
+/// — were unanswerable. Scattered columns hinted at it (`recordedByUserId`,
+/// `voidedByUserId`, `voidReason`) but nothing was queryable and nothing
+/// covered edits at all. History that was not recorded cannot be backfilled,
+/// which is why this landed before the features that will fill it.
+///
+/// ## Append-only, and enforced rather than hoped for
+///
+/// Nothing in this application may update or delete one of these rows. Two
+/// mechanisms hold that, neither of which is a comment:
+///
+///   1. A Postgres trigger (`prisma/audit-immutability.sql`, applied by
+///      `scripts/ensure-audit-immutability.mjs`, which `npm run db:push` runs
+///      afterwards) raises an exception on any UPDATE or DELETE. That one holds
+///      against raw SQL, a psql session and a future ORM alike.
+///   2. Prisma middleware in `src/server/db.ts` refuses the same operations
+///      before they leave the process, so a mistake fails with a sentence a
+///      developer can read rather than a database error at the end of a
+///      transaction.
+///
+/// ## Deliberately never reaped
+///
+/// The daily cron reaps expired reset tokens and rate-limit counters. Do not
+/// add these rows to it by analogy: those two are throwaway state that means
+/// nothing a week later, and this is the one table whose entire value is that
+/// it still holds what happened four years ago. See the note in
+/// `src/app/api/cron/reminders/route.ts`.
+///
+/// ## No relations, deliberately
+///
+/// `actorUserId`, `entityId` and everything in `context` are plain strings, not
+/// foreign keys — the same choice `Sale.createdByUserId` already makes. A
+/// relation would force a bad answer either way: `Cascade` would let deleting a
+/// user or a project erase the record of what they did, and `Restrict` would
+/// let the audit log veto ordinary administration forever. The log is a record
+/// of the past, and the past does not hold references to the present. What it
+/// needs from the present it *snapshots* — `actorName`, `actorRole`,
+/// `entityLabel` — so an entry still reads correctly after the actor is
+/// deactivated or the unit is renamed.
+model AuditEntry {
+  id String @id @default(cuid())
+
+  /// Tenant scope, on every entry, exactly like every other table here.
+  orgId String
+
+  /// Who acted. A plain id (see above) plus the two things about them that
+  /// were true at the time and may not be later: their name and their role.
+  actorUserId String
+  actorName   String
+  actorRole   UserRole
+
+  /// The business event, as `entity.verb` — 'payment.voided', 'unit.updated'.
+  /// A string rather than an enum: the vocabulary grows with every feature, and
+  /// a new verb must never require a migration before it can be recorded.
+  /// `describeAuditEntry` in src/domain/audit.ts renders each one, and falls
+  /// back to a readable sentence for any it does not know.
+  action String
+
+  /// What it happened to: the model name and its id, plus that entity's human
+  /// name *as it was*. The label is what makes "voided a payment on unit 4C"
+  /// keep saying 4C after the unit is renamed 4C-PH.
+  entityType  String
+  entityId    String
+  entityLabel String?
+
+  /// Only the fields that actually changed, each as `{field, from, to}` with a
+  /// tagged value that knows whether it is money, an enum, a date or an image —
+  /// never a dump of the whole row. Money travels as a decimal string of minor
+  /// units alongside its currency, because JSON has no BigInt and because a
+  /// figure without its currency is not an amount. See `AuditChange` in
+  /// src/domain/audit.ts.
+  changes Json @default("[]")
+
+  /// The ids and snapshots a sentence needs but the entity does not carry —
+  /// the sale a payment belongs to, the project a unit is in, the reason a
+  /// payment was voided. See `AuditContext` in src/domain/audit.ts.
+  context Json @default("{}")
+
+  createdAt DateTime @default(now())
+
+  /// One index, and one on purpose.
+  ///
+  /// Every read of this table is "this organisation, newest first", optionally
+  /// narrowed by entity type, actor or date — so `(orgId, createdAt)` serves
+  /// the ordering, the tenant scope and the date range, and Postgres scans it
+  /// backwards for DESC without needing a second, descending copy. The two
+  /// filters ride on top as a filter over an already tight range.
+  ///
+  /// A busy month for one developer is on the order of a thousand entries (see
+  /// the /audit page's note), so the filters do not yet earn indexes of their
+  /// own, and this is the table every money write now pays an insert into —
+  /// each extra index is a cost on every payment, every sale and every edit. If
+  /// an organisation ever reaches millions of rows, add
+  /// `@@index([orgId, entityType, createdAt])` then, on evidence.
+  @@index([orgId, createdAt])
+}

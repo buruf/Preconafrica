@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServiceError } from '@/server/services/errors'
 import type { SessionActor } from '@/server/session'
+import { auditRecorder } from './audit-fake'
 
 /**
  * Voiding, under the targeted allocation rule.
@@ -54,6 +55,9 @@ const DUE: Record<string, bigint> = { e1: 30000n, e2: 30000n }
 
 function fakeTx(allocations: StoredAllocation[]) {
   const calls: string[] = []
+  // Audit writes join the same ordered call list, so their placement inside the
+  // transaction is assertable rather than assumed.
+  const audit = auditRecorder((action) => calls.push(`audit:${action}`))
   const store = allocations.map((row) => ({ ...row }))
   /** entryId -> the total the bulk UPDATE actually wrote. */
   const written: Record<string, string> = {}
@@ -130,10 +134,11 @@ function fakeTx(allocations: StoredAllocation[]) {
         calls.push('scheduleEntry.updateMany')
         return { count: 0 }
       }
-    }
+    },
+    auditEntry: audit.auditEntry
   }
 
-  return { tx: tx as unknown as Prisma.TransactionClient, calls, store, written }
+  return { tx: tx as unknown as Prisma.TransactionClient, calls, store, written, audit }
 }
 
 /**
@@ -168,7 +173,7 @@ describe('voidPayment', () => {
       saleId: 'sale_1',
       amountMinor: 30000n,
       voidedAt: null,
-      sale: { currency: 'NGN' },
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
       allocations: [{ scheduleEntryId: 'e2', scheduleEntry: { sequence: 2 } }]
     })
     $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
@@ -203,7 +208,7 @@ describe('voidPayment', () => {
       saleId: 'sale_1',
       amountMinor: 8000n,
       voidedAt: null,
-      sale: { currency: 'NGN' },
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
       allocations: [{ scheduleEntryId: 'e2', scheduleEntry: { sequence: 2 } }]
     })
     $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
@@ -232,7 +237,7 @@ describe('voidPayment', () => {
       saleId: 'sale_1',
       amountMinor: 35000n,
       voidedAt: null,
-      sale: { currency: 'NGN' },
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
       allocations: [
         { scheduleEntryId: 'e2', scheduleEntry: { sequence: 2 } },
         { scheduleEntryId: 'e1', scheduleEntry: { sequence: 1 } }
@@ -263,7 +268,7 @@ describe('voidPayment', () => {
       saleId: 'sale_1',
       amountMinor: 30000n,
       voidedAt: null,
-      sale: { currency: 'NGN' },
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
       allocations: [{ scheduleEntryId: 'e2', scheduleEntry: { sequence: 2 } }]
     })
     $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
@@ -296,7 +301,7 @@ describe('voidPayment', () => {
       saleId: 'sale_1',
       amountMinor: 30000n,
       voidedAt: new Date('2026-08-10T00:00:00.000Z'),
-      sale: { currency: 'NGN' },
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
       allocations: []
     })
 
@@ -314,6 +319,89 @@ describe('voidPayment', () => {
 
     expect(failure).toBeInstanceOf(ServiceError)
     expect((failure as ServiceError).code).toBe('NOT_FOUND')
+    expect($transaction).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The question the owner asked for by name: who voided that payment, and why.
+ *
+ * The reason is the part of a void that cannot be reconstructed from the rows
+ * afterwards — the allocations are simply gone — so an entry that carried the
+ * figure but not the reason would answer half of it.
+ */
+describe('voidPayment writes the audit trail', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('records the actor, the figure and the reason, inside the transaction', async () => {
+    const { tx, calls, audit } = fakeTx([
+      { paymentId: 'payment_b', scheduleEntryId: 'e2', amountMinor: 18333333n }
+    ])
+    findFirst.mockResolvedValue({
+      id: 'payment_b',
+      saleId: 'sale_1',
+      amountMinor: 18333333n,
+      voidedAt: null,
+      sale: { currency: 'KES', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
+      allocations: [{ scheduleEntryId: 'e2', scheduleEntry: { sequence: 2 } }]
+    })
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await voidPayment(admin, 'payment_b', '  duplicate entry  ')
+
+    const [entry] = audit.of('payment.voided')
+    expect(entry).toBeDefined()
+    expect(entry.actorUserId).toBe('user_1')
+    expect(entry.actorName).toBe('Ada Okafor')
+    expect(entry.actorRole).toBe('ADMIN')
+    expect(entry.entityType).toBe('Payment')
+    expect(entry.entityId).toBe('payment_b')
+    expect(entry.entityLabel).toBe('4C')
+    // The same trimmed reason the Payment row stores, so what the log quotes
+    // and what the record holds cannot disagree.
+    expect(entry.context).toMatchObject({
+      saleId: 'sale_1',
+      unitName: '4C',
+      currency: 'KES',
+      amountMinor: '18333333',
+      reason: 'duplicate entry'
+    })
+    // Written through the transaction client, after the void itself.
+    expect(calls).toContain('audit:payment.voided')
+    expect(calls.indexOf('payment.updateMany')).toBeLessThan(
+      calls.indexOf('audit:payment.voided')
+    )
+  })
+
+  it('writes no entry at all when the void is refused', async () => {
+    const { tx, audit } = fakeTx([])
+    findFirst.mockResolvedValue({
+      id: 'payment_b',
+      saleId: 'sale_1',
+      amountMinor: 30000n,
+      voidedAt: new Date('2026-08-01T00:00:00Z'),
+      sale: { currency: 'NGN', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
+      allocations: []
+    })
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await voidPayment(admin, 'payment_b', 'duplicate entry').catch(() => undefined)
+
+    // An attempt that changed nothing is not history. The log records what
+    // happened, not what somebody tried.
+    expect(audit.entries).toHaveLength(0)
+  })
+
+  it('refuses an agent without recording anything', async () => {
+    const failure = await voidPayment(agent, 'payment_b', 'duplicate entry').catch(
+      (error: unknown) => error
+    )
+
+    expect(failure).toBeInstanceOf(ServiceError)
     expect($transaction).not.toHaveBeenCalled()
   })
 })

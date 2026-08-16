@@ -35,23 +35,25 @@ export interface Destination {
 const HOME: Destination = { href: '/', label: 'Home', icon: 'home' }
 
 /**
- * Profile owns the change-password pages (both roles' copies) and `/team`.
+ * Profile owns the change-password pages (both roles' copies), `/team` and
+ * `/audit`.
  *
- * Team is deliberately *not* a fifth tab. DESIGN.md caps the bar at four
- * destinations for staff and three for a buyer (Projects is staff-only);
- * adding a fifth for one role would make the admin's bar a
- * different shape from the agent's on the same screens, and Team is an
- * occasional org-administration surface (add an agent, set the letterhead
- * logo), not somewhere anyone navigates several times a day. Profile is
- * already "you and your organisation", so it links there — and because it is
- * a link on a page rather than a tab, it is identically reachable from both
- * presentations, which is the invariant this module exists to hold.
+ * Team is deliberately *not* a fifth tab, and neither is the audit log.
+ * DESIGN.md caps the bar at four destinations for staff and three for a buyer
+ * (Projects is staff-only); adding a fifth for one role would make the admin's
+ * bar a different shape from the agent's on the same screens, and both of these
+ * are occasional org-administration surfaces (add an agent, set the letterhead
+ * logo, read back who voided a payment), not somewhere anyone navigates several
+ * times a day. Profile is already "you and your organisation", so it links to
+ * both — and because they are links on a page rather than tabs, they are
+ * identically reachable from both presentations, which is the invariant this
+ * module exists to hold.
  */
 const PROFILE: Destination = {
   href: '/profile',
   label: 'Profile',
   icon: 'profile',
-  owns: ['/account', '/team', '/dashboard/account']
+  owns: ['/account', '/team', '/audit', '/dashboard/account']
 }
 
 export function destinationsFor(role: Role): Destination[] {

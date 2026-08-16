@@ -13,6 +13,8 @@ import {
 } from '@/domain/allocation'
 import { formatMinor, toMinor } from '@/domain/currency'
 import { scheduleEntryTitle } from '@/domain/schedule'
+import { recordAudit, type AuditWriter } from '@/server/audit/record'
+import { enumValue, type AuditContext } from '@/domain/audit'
 
 /**
  * Schema-level shape check only — this cannot know which currency the sale is
@@ -67,11 +69,19 @@ export type RecordPaymentInput = z.infer<typeof RecordPaymentSchema>
  *
  * Called while holding the sale's row lock, so the entries read here cannot be
  * moved out from under the decision.
+ *
+ * The status move is audited here rather than by the caller because here is the
+ * only place that knows whether one happened: both callers ask for a resync on
+ * every write, and most writes leave the status exactly where it was. Attributed
+ * to the actor whose payment or void caused it — nothing in this system changes
+ * a sale's status on its own.
  */
 async function syncSaleStatus(
   tx: Prisma.TransactionClient,
+  actor: SessionActor,
   saleId: string,
-  currentStatus: SaleStatus
+  currentStatus: SaleStatus,
+  context: AuditContext
 ): Promise<void> {
   if (currentStatus === 'CANCELLED') return
 
@@ -86,6 +96,16 @@ async function syncSaleStatus(
 
   if (desired !== currentStatus) {
     await tx.sale.update({ where: { id: saleId }, data: { status: desired } })
+    await recordAudit(tx, actor, {
+      action: 'sale.status_changed',
+      entityType: 'Sale',
+      entityId: saleId,
+      entityLabel: context.unitName ?? null,
+      changes: [
+        { field: 'status', from: enumValue(currentStatus), to: enumValue(desired) }
+      ],
+      context
+    })
   }
 }
 
@@ -94,7 +114,15 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
 
   const sale = await prisma.sale.findFirst({
     where: { id: input.saleId, orgId: actor.orgId },
-    select: { id: true, currency: true }
+    // The unit comes along for the audit entry, which has to be able to say
+    // "on unit 4C" and link to the unit's page. Three columns off a relation
+    // this query was already resolving through — no extra round trip, and no
+    // change to what this function returns or refuses.
+    select: {
+      id: true,
+      currency: true,
+      unit: { select: { id: true, name: true, projectId: true } }
+    }
   })
   if (!sale) throw new ServiceError('Sale not found', 'NOT_FOUND')
 
@@ -109,6 +137,18 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
   }
 
   const receivedAt = new Date(input.receivedAt)
+
+  // Built once, out of values read before the transaction and never from the
+  // form: everything the log needs to say what this was about and where it
+  // points. The unit name is a snapshot — renaming 4C tomorrow must not rewrite
+  // what today's entry says happened.
+  const auditContext: AuditContext = {
+    saleId: sale.id,
+    unitId: sale.unit?.id,
+    unitName: sale.unit?.name,
+    projectId: sale.unit?.projectId,
+    currency: sale.currency
+  }
 
   return prisma.$transaction(async (tx) => {
     // Before reading the schedule, not after: the read is what the second
@@ -191,12 +231,31 @@ export async function recordPayment(actor: SessionActor, input: RecordPaymentInp
     // introduced here.
     const { documentId: receiptId, number: receiptNumber } = await issueReceipt(
       tx,
-      actor.orgId,
+      actor,
       sale.id,
-      payment.id
+      payment.id,
+      auditContext
     )
 
-    await syncSaleStatus(tx, sale.id, locked.status)
+    // Inside the transaction, alongside the payment it describes: a payment
+    // that committed without a record of who took it is exactly the hole this
+    // log exists to close. See @/server/audit/record for the trade.
+    await recordAudit(tx, actor, {
+      action: 'payment.recorded',
+      entityType: 'Payment',
+      entityId: payment.id,
+      entityLabel: sale.unit?.name ?? null,
+      // A creation has no "before", so there is nothing to diff — what happened
+      // is in the context, which is where the figure, the currency and the
+      // entry it settled all live.
+      context: {
+        ...auditContext,
+        amountMinor: amountMinor.toString(),
+        entrySequence: entry.sequence
+      }
+    })
+
+    await syncSaleStatus(tx, actor, sale.id, locked.status, auditContext)
 
     // `overpaymentMinor` is gone rather than returned as a permanent zero: the
     // amount is capped at one entry's outstanding, so a surplus cannot occur,
@@ -231,13 +290,27 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
       // always exactly one entry; a payment recorded under the old cascade
       // still carries several, and both are described truthfully.
       allocations: { select: { scheduleEntryId: true, scheduleEntry: { select: { sequence: true } } } },
-      sale: { select: { currency: true } }
+      // The unit, for the same reason recordPayment selects it: the log has to
+      // name what the money was on. Added to a relation this include already
+      // walked.
+      sale: { select: { currency: true, unit: { select: { id: true, name: true, projectId: true } } } }
     }
   })
   if (!payment) throw new ServiceError('Payment not found', 'NOT_FOUND')
   if (payment.voidedAt) throw new ServiceError('That payment is already void', 'CONFLICT')
 
   const affectedEntryIds = payment.allocations.map((a) => a.scheduleEntryId)
+  // Trimmed once, and the same trimmed string is what the row stores and what
+  // the log quotes — so the reason an admin reads back is the reason recorded.
+  const trimmedReason = reason.trim()
+
+  const auditContext: AuditContext = {
+    saleId: payment.saleId,
+    unitId: payment.sale.unit?.id,
+    unitName: payment.sale.unit?.name,
+    projectId: payment.sale.unit?.projectId,
+    currency: payment.sale.currency
+  }
 
   await prisma.$transaction(async (tx) => {
     // Same lock as recordPayment, and for the same reason: a void withdrawing
@@ -255,7 +328,7 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
     // same allocations.
     const stillVoidable = await tx.payment.updateMany({
       where: { id: paymentId, voidedAt: null },
-      data: { voidedAt: new Date(), voidedByUserId: actor.userId, voidReason: reason.trim() }
+      data: { voidedAt: new Date(), voidedByUserId: actor.userId, voidReason: trimmedReason }
     })
     if (stillVoidable.count !== 1) {
       throw new ServiceError('That payment is already void', 'CONFLICT')
@@ -288,7 +361,24 @@ export async function voidPayment(actor: SessionActor, paymentId: string, reason
     // audit trail whatever the payment happened to touch.
     await recomputeEntries(tx, affectedEntries, undefined)
 
-    await syncSaleStatus(tx, payment.saleId, locked.status)
+    // The one entry that answers "who voided that payment, and why". The reason
+    // is not decoration here: it is the only part of a void that cannot be
+    // reconstructed from the rows afterwards, and it is the question the owner
+    // asked for by name.
+    await recordAudit(tx, actor, {
+      action: 'payment.voided',
+      entityType: 'Payment',
+      entityId: paymentId,
+      entityLabel: payment.sale.unit?.name ?? null,
+      changes: [{ field: 'status', from: enumValue('RECORDED'), to: enumValue('VOID') }],
+      context: {
+        ...auditContext,
+        amountMinor: payment.amountMinor.toString(),
+        reason: trimmedReason
+      }
+    })
+
+    await syncSaleStatus(tx, actor, payment.saleId, locked.status, auditContext)
   })
 
   return {

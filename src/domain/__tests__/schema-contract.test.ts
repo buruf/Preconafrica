@@ -141,6 +141,13 @@ describe('schema contract', () => {
       'PaymentAllocation',
       'Document',
       'ScheduleEntry',
+      // The record of who moved the money is exactly as destroyable as the money
+      // rows, and rather more tempting to destroy: an `actorUserId` relation onto
+      // User with `onDelete: Cascade` would look like tidy housekeeping and would
+      // erase the history of everything a departed agent ever did. AuditEntry
+      // deliberately declares no relations at all — see the test below — and this
+      // line is what makes adding a Cascade one fail loudly.
+      'AuditEntry',
     ])
 
     const models = allModels()
@@ -161,5 +168,70 @@ describe('schema contract', () => {
     }
 
     expect(violations.join('\n')).toBe('')
+  })
+
+  /**
+   * The audit log's own contract.
+   *
+   * The rule above stops a Cascade from reaching audit rows. These stop the two
+   * other ways history could be lost — a foreign key that lets some other
+   * table's lifecycle decide this one's, and a schema push that silently drops
+   * the triggers making the rows append-only.
+   */
+  it('gives AuditEntry no relations at all, so nothing else owns its lifetime', () => {
+    const auditEntry = allModels().find((model) => model.name === 'AuditEntry')
+    expect(auditEntry, 'the schema must declare an AuditEntry model').toBeDefined()
+
+    // Not "no Cascade relations" — *no relations*. A `Restrict` foreign key onto
+    // User would be the mirror-image failure: instead of the log losing history
+    // when a user is deleted, the log would forbid ever deleting a user, and the
+    // first person to hit that would be tempted to fix it by deleting audit rows.
+    // Every reference this table holds is a plain string, exactly as
+    // `Sale.createdByUserId` already is.
+    expect(relationsIn(auditEntry!.body)).toEqual([])
+  })
+
+  it('indexes AuditEntry for the only way it is ever read', () => {
+    // Tenant scope plus newest-first, which also serves the date range: Postgres
+    // scans a btree backwards for DESC, so no second descending index is needed.
+    const auditEntry = allModels().find((model) => model.name === 'AuditEntry')
+    expect(auditEntry!.body).toContain('@@index([orgId, createdAt])')
+  })
+
+  it('keeps every audit column that a sentence is built from', () => {
+    // An entry has to stay readable after the actor is deactivated and the unit
+    // is renamed, which it can only do by snapshotting. Losing any one of these
+    // columns would silently turn a rendered row into "somebody did something".
+    const auditEntry = allModels().find((model) => model.name === 'AuditEntry')!.body
+    for (const column of [
+      'orgId',
+      'actorUserId',
+      'actorName',
+      'actorRole',
+      'action',
+      'entityType',
+      'entityId',
+      'entityLabel',
+      'changes',
+      'context',
+      'createdAt',
+    ]) {
+      expect(auditEntry, `AuditEntry must keep ${column}`).toMatch(
+        new RegExp(`^\\s*${column}\\s`, 'm')
+      )
+    }
+  })
+
+  it('ships the SQL that makes audit rows append-only', () => {
+    // `prisma db push` recreates tables and knows nothing about triggers, so the
+    // file has to exist and has to be re-applied after every push. What it
+    // actually contains is asserted in server/__tests__/audit-immutability.test.ts;
+    // this is the schema-side half — the schema is not complete without it.
+    const sql = readFileSync(
+      path.resolve(__dirname, '../../../prisma/audit-immutability.sql'),
+      'utf8'
+    )
+    expect(sql).toMatch(/BEFORE UPDATE ON "AuditEntry"/)
+    expect(sql).toMatch(/BEFORE DELETE ON "AuditEntry"/)
   })
 })

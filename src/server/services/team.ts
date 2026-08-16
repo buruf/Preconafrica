@@ -8,6 +8,8 @@ import { ServiceError } from '@/server/services/errors'
 import { constraintTargetIncludes } from '@/server/services/units'
 import { ImageUrlField } from '@/server/services/media'
 import { deleteReplacedBlobs } from '@/server/media/blob'
+import { recordAudit } from '@/server/audit/record'
+import { diffValues, image } from '@/domain/audit'
 
 export const CreateAgentSchema = z.object({
   fullName: z.string().trim().min(2, 'Name is required').max(120),
@@ -32,16 +34,32 @@ export async function createAgent(actor: SessionActor, input: CreateAgentInput) 
   const passwordHash = await bcrypt.hash(input.password, 10)
 
   try {
-    const user = await prisma.user.create({
-      data: {
-        // The agent joins the admin's organisation, taken from the session —
-        // never from the form, or an admin could plant a user in another tenant.
-        orgId: actor.orgId,
-        email: input.email,
-        passwordHash,
-        fullName: input.fullName,
-        role: 'AGENT'
-      }
+    // The create and its audit entry commit together: granting somebody access
+    // to a system of record, with no record of who granted it, is precisely the
+    // gap this log closes. The transaction changes nothing a caller can see —
+    // the same `{ userId }` comes back, and a P2002 still escapes to the catch
+    // below, where it is translated exactly as before.
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          // The agent joins the admin's organisation, taken from the session —
+          // never from the form, or an admin could plant a user in another tenant.
+          orgId: actor.orgId,
+          email: input.email,
+          passwordHash,
+          fullName: input.fullName,
+          role: 'AGENT'
+        }
+      })
+
+      await recordAudit(tx, actor, {
+        action: 'user.agent_added',
+        entityType: 'User',
+        entityId: created.id,
+        entityLabel: created.fullName
+      })
+
+      return created
     })
 
     return { userId: user.id }
@@ -156,9 +174,28 @@ export async function updateOrganizationLogo(
     select: { logoUrl: true }
   })
 
-  await prisma.organization.update({
-    where: { id: actor.orgId },
-    data: { logoUrl: input.logoUrl }
+  await prisma.$transaction(async (tx) => {
+    await tx.organization.update({
+      where: { id: actor.orgId },
+      data: { logoUrl: input.logoUrl }
+    })
+
+    // The logo is the letterhead on every invoice and receipt a buyer receives,
+    // so changing it changes what the organisation looks like to its customers.
+    // Only recorded when it actually moved — an admin who opens the form and
+    // saves it unchanged has not done anything.
+    const changes = diffValues(
+      { logoUrl: image(before?.logoUrl) },
+      { logoUrl: image(input.logoUrl) }
+    )
+    if (changes.length > 0) {
+      await recordAudit(tx, actor, {
+        action: 'org.updated',
+        entityType: 'Organization',
+        entityId: actor.orgId,
+        changes
+      })
+    }
   })
 
   // The replaced mark, deleted only once the row has stopped pointing at it,
@@ -187,8 +224,22 @@ export async function deactivateAgent(actor: SessionActor, userId: string) {
   //     even if a future change stops consulting `disabledAt`. The replacement
   //     is a value no input can produce, so bcrypt.compare against it always
   //     resolves false and never throws.
-  await prisma.user.update({
-    where: { id: userId },
-    data: { disabledAt: new Date(), passwordHash: `disabled:${randomUUID()}` }
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: { disabledAt: new Date(), passwordHash: `disabled:${randomUUID()}` }
+    })
+
+    // Revoking access is as much a change to who can act as granting it. The
+    // hash overwrite is deliberately not in the diff: it is a defence-in-depth
+    // detail, not a fact about the account anybody needs read back, and a log
+    // that mentions password hashes invites somebody to record one.
+    await recordAudit(tx, actor, {
+      action: 'user.agent_deactivated',
+      entityType: 'User',
+      entityId: userId,
+      entityLabel: user.fullName,
+      changes: [{ field: 'status', from: { kind: 'enum', value: 'ACTIVE' }, to: { kind: 'enum', value: 'DEACTIVATED' } }]
+    })
   })
 }

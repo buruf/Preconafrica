@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServiceError } from '@/server/services/errors'
 import { formatMinor } from '@/domain/currency'
 import type { SessionActor } from '@/server/session'
+import { auditRecorder } from './audit-fake'
 
 /**
  * recordPayment's money arithmetic is already covered by the pure allocation
@@ -78,6 +79,10 @@ function fakeTx(options: {
   const status = options.status ?? 'ACTIVE'
   const entry = options.entry === undefined ? ENTRIES[1] : options.entry
   const allocationRows: Array<{ scheduleEntryId: string; amountMinor: bigint }> = []
+  // Audit writes land in the same call list as everything else, so "the entry
+  // is written inside the transaction, not after it commits" is an ordering
+  // assertion rather than a hopeful comment.
+  const audit = auditRecorder((action) => calls.push(`audit:${action}`))
 
   const tx = {
     $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -153,16 +158,23 @@ function fakeTx(options: {
         calls.push(`document.create:${args.data.type}`)
         return { id: 'document_1', ...args.data }
       }
-    }
+    },
+    auditEntry: audit.auditEntry
   }
 
-  return { tx: tx as unknown as Prisma.TransactionClient, calls, allocationRows }
+  return { tx: tx as unknown as Prisma.TransactionClient, calls, allocationRows, audit }
 }
 
 describe('recordPayment orchestration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    findFirst.mockResolvedValue({ id: 'sale_1', currency: 'NGN' })
+    findFirst.mockResolvedValue({
+      id: 'sale_1',
+      currency: 'NGN',
+      // The unit the service now selects for the audit entry's sentence and
+      // link. It is the same relation the sale lookup already walked.
+      unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' }
+    })
   })
 
   it('refuses to record against a cancelled sale', async () => {
@@ -405,5 +417,113 @@ describe('recordPayment orchestration', () => {
     expect(failure).toBeInstanceOf(ServiceError)
     expect((failure as ServiceError).code).toBe('NOT_FOUND')
     expect($transaction).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The end-to-end half of the audit log for this flow: not "the helper builds
+ * the right shape" (that is proven in the domain tests) but "recording a
+ * payment actually produces an entry, with the right actor, inside the same
+ * transaction as the money".
+ *
+ * `fakeTx` pushes every audit write into the same ordered call list as the
+ * allocation and the receipt, which is what makes the placement assertable.
+ */
+describe('recordPayment writes the audit trail', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    findFirst.mockResolvedValue({
+      id: 'sale_1',
+      currency: 'NGN',
+      unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' }
+    })
+  })
+
+  it('records who took the payment, for how much, and against what', async () => {
+    const { tx, audit } = fakeTx()
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await recordPayment(actor, input)
+
+    const [entry] = audit.of('payment.recorded')
+    expect(entry).toBeDefined()
+    // Who — the acting user, their name and the role they held at the time,
+    // none of which is read back from the User table when the log is rendered.
+    expect(entry.actorUserId).toBe('user_1')
+    expect(entry.actorName).toBe('Tunde Bakare')
+    expect(entry.actorRole).toBe('AGENT')
+    expect(entry.orgId).toBe('org_1')
+    // What — the payment, the unit it was on, and the figure in the sale's own
+    // currency as a string, because a bigint cannot survive a Json column.
+    expect(entry.entityType).toBe('Payment')
+    expect(entry.entityId).toBe('payment_1')
+    expect(entry.entityLabel).toBe('4C')
+    expect(entry.context).toMatchObject({
+      saleId: 'sale_1',
+      unitName: '4C',
+      projectId: 'project_1',
+      currency: 'NGN',
+      amountMinor: '30000',
+      entrySequence: 2
+    })
+  })
+
+  it('writes the entry inside the transaction, before anything could commit', async () => {
+    const { tx, calls } = fakeTx()
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await recordPayment(actor, input)
+
+    // Every audit write happened through the transaction client, in order,
+    // after the row it describes and before the transaction ended. If the call
+    // moved outside `$transaction`, none of these would be in `calls` at all.
+    expect(calls).toContain('audit:payment.recorded')
+    expect(calls.indexOf('payment.create')).toBeLessThan(calls.indexOf('audit:payment.recorded'))
+    // The receipt is audited too, by the one function every document goes through.
+    expect(calls).toContain('audit:document.issued')
+  })
+
+  it('records the sale status change as its own entry, attributed to the same actor', async () => {
+    const { tx, audit } = fakeTx({
+      entriesAfterRecompute: [
+        { amountDueMinor: 30000n, amountPaidMinor: 30000n },
+        { amountDueMinor: 30000n, amountPaidMinor: 30000n }
+      ]
+    })
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await recordPayment(actor, input)
+
+    const [entry] = audit.of('sale.status_changed')
+    expect(entry).toBeDefined()
+    expect(entry.entityType).toBe('Sale')
+    expect(entry.actorName).toBe('Tunde Bakare')
+    // The before and after of the only field that moved, and nothing else.
+    expect(entry.changes).toEqual([
+      { field: 'status', from: { kind: 'enum', value: 'ACTIVE' }, to: { kind: 'enum', value: 'COMPLETED' } }
+    ])
+  })
+
+  it('records no status entry when the status did not move', async () => {
+    const { tx, audit } = fakeTx({
+      entriesAfterRecompute: [
+        { amountDueMinor: 30000n, amountPaidMinor: 30000n },
+        { amountDueMinor: 30000n, amountPaidMinor: 0n }
+      ]
+    })
+    $transaction.mockImplementation((callback: (tx: Prisma.TransactionClient) => unknown) =>
+      callback(tx)
+    )
+
+    await recordPayment(actor, input)
+
+    // A log that records non-events is a log nobody reads.
+    expect(audit.of('sale.status_changed')).toHaveLength(0)
   })
 })

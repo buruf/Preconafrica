@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ServiceError } from '@/server/services/errors'
 import type { SessionActor } from '@/server/session'
+import { auditRecorder } from './audit-fake'
 
 /**
  * `issueInvoice` has three ordered decisions, and the order is the whole point:
@@ -60,17 +61,25 @@ function entry(overrides: {
     dueDate: new Date('2026-03-10T00:00:00Z'),
     amountDueMinor: 18333333n,
     amountPaidMinor: overrides.amountPaidMinor,
-    sale: { id: 'sale_1' },
+    // The unit rides along on the sale for the audit entry's sentence and link.
+    sale: { id: 'sale_1', unit: { id: 'unit_4c', name: '4C', projectId: 'project_1' } },
     document: overrides.document ?? null
   }
 }
 
+/** The audit entries this test's transaction wrote. Reset by `creates`. */
+let audit = auditRecorder()
+
 /** Stands in for the create, and records that it happened. */
 function creates(documentId: string) {
+  audit = auditRecorder()
   $transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => {
     await callback({
       organization: { update: async () => ({ documentSeq: 18 }) },
-      document: { create: async () => ({ id: documentId }) }
+      document: { create: async () => ({ id: documentId, number: 'INV-000018' }) },
+      // Every document is audited by `createDocument`, inside the same
+      // transaction as the row it describes — so the fake has to offer it.
+      auditEntry: audit.auditEntry
     })
     return { id: documentId }
   })
@@ -214,5 +223,42 @@ describe('issueInvoice scoping and idempotency', () => {
       id: 'entry_1',
       sale: { orgId: 'org_1', buyerId: 'buyer_9' }
     })
+  })
+})
+
+describe('issuing a document is audited', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('records who issued it, which document, and on what', async () => {
+    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n }))
+    creates('doc_new')
+
+    await issueInvoice(staff, 'entry_1')
+
+    const [recorded] = audit.of('document.issued')
+    expect(recorded).toBeDefined()
+    expect(recorded.actorUserId).toBe('user_1')
+    expect(recorded.actorName).toBe('Tunde Bakare')
+    expect(recorded.entityType).toBe('Document')
+    // The number, not the id, is what a person quotes back at you.
+    expect(recorded.entityLabel).toBe('INV-000018')
+    expect(recorded.context).toMatchObject({
+      saleId: 'sale_1',
+      unitName: '4C',
+      documentNumber: 'INV-000018',
+      documentType: 'INVOICE',
+      entrySequence: 2
+    })
+  })
+
+  it('records nothing when the invoice already existed', async () => {
+    findFirst.mockResolvedValue(entry({ amountPaidMinor: 0n, document: { id: 'doc_existing' } }))
+    creates('doc_should_not_be_created')
+
+    await issueInvoice(staff, 'entry_1')
+
+    // Idempotency means the second request is not an event: no document was
+    // created, so there is nothing that happened to record.
+    expect(audit.entries).toHaveLength(0)
   })
 })
