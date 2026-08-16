@@ -251,8 +251,8 @@ export function summariseSale(
     totalOwedMinor,
     paidToDateMinor,
     // Clamped because this function does not own the rows it is handed. The
-    // services cannot produce an over-allocation — `allocatePayment` never
-    // exceeds an entry's due — but a hand-repaired sale could, and a buyer must
+    // services cannot produce an over-allocation — `allocateToEntry` caps every
+    // payment at its entry's outstanding — but a hand-repaired sale could, and a buyer must
     // never be shown a negative balance.
     balanceMinor: balanceMinor > 0n ? balanceMinor : 0n,
     nextDue: next ? { dueDate: next.dueDate, amountMinor: outstandingMinor(next) } : null,

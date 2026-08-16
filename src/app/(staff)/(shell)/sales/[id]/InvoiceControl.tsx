@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useFormState, useFormStatus } from 'react-dom'
-import { ErrorText } from '@/components/ui'
+import { Notice } from '@/components/ui'
 import { issueInvoiceAction } from './actions'
 
 function IssueButton() {
@@ -38,27 +38,33 @@ export function InvoiceControl({
   scheduleEntryId: string
   documentId: string | null
 }) {
-  const [error, formAction] = useFormState(issueInvoiceAction, undefined)
+  const [result, formAction] = useFormState(issueInvoiceAction, undefined)
 
   if (documentId) {
     return (
-      <Link
-        href={`/api/documents/${documentId}`}
-        className="inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
-      >
-        Invoice
-      </Link>
+      // The confirmation rides along with the download link that replaced the
+      // button: issuing succeeds, the page revalidates, and without this the
+      // only sign anything happened would be a word quietly changing.
+      <div className="space-y-2">
+        <Notice result={result} />
+        <Link
+          href={`/api/documents/${documentId}`}
+          className="inline-flex min-h-11 items-center text-sm font-semibold text-navy-900 underline"
+        >
+          Invoice
+        </Link>
+      </div>
     )
   }
 
   return (
-    <div>
+    <div className="space-y-2">
+      <Notice result={result} />
       <form action={formAction}>
         <input type="hidden" name="saleId" value={saleId} />
         <input type="hidden" name="scheduleEntryId" value={scheduleEntryId} />
         <IssueButton />
       </form>
-      <ErrorText>{error}</ErrorText>
     </div>
   )
 }

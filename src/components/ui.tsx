@@ -187,6 +187,7 @@ export function Select({
   name,
   children,
   defaultValue,
+  value,
   required,
   disabled,
   onChange,
@@ -195,6 +196,14 @@ export function Select({
   name: string
   children: ReactNode
   defaultValue?: string
+  /**
+   * Makes the select controlled, for the one caller that has to *read* the
+   * choice rather than merely post it: the payment form disables its own
+   * submit until an entry is chosen and the typed amount fits inside what that
+   * entry owes. Pass `onChange` with it, as React requires of any controlled
+   * input; `defaultValue` and this are mutually exclusive.
+   */
+  value?: string
   required?: boolean
   disabled?: boolean
   /**
@@ -210,6 +219,7 @@ export function Select({
     <select
       name={name}
       defaultValue={defaultValue}
+      value={value}
       required={required}
       disabled={disabled}
       onChange={onChange}
@@ -352,6 +362,48 @@ export function ErrorText({ children }: { children?: ReactNode }) {
   return (
     <p className="rounded-btn border border-status-overdue-border bg-status-overdue-bg px-3 py-2 text-sm text-status-overdue-text">
       {children}
+    </p>
+  )
+}
+
+/**
+ * What a server action answers with.
+ *
+ * A discriminated result rather than "a string when something went wrong,
+ * `undefined` when it worked". That shape is what made recording a payment
+ * feel like it had failed: success rendered nothing at all, so the only
+ * feedback a silent form gave was the temptation to submit it again — which is
+ * exactly how one $50,000 deposit got recorded twice.
+ *
+ * `ok` carries the news; the message says what happened either way.
+ */
+export type ActionResult = { ok: true; message: string } | { ok: false; message: string }
+
+/**
+ * The two tones a result is drawn in, straight from DESIGN.md's status table:
+ * success in the Available/Paid green, failure in the Overdue red. Exported so
+ * the mapping itself is assertable — a success that renders in the failure
+ * palette is a bug a person notices and a type checker never will.
+ */
+export const NOTICE_TONE: Record<'ok' | 'error', string> = {
+  ok: 'border-status-paid-border bg-status-paid-bg text-status-paid-text',
+  error: 'border-status-overdue-border bg-status-overdue-bg text-status-overdue-text'
+}
+
+/**
+ * A server action's answer, shown where the person who submitted the form is
+ * already looking. `role="status"` so a screen reader announces it without
+ * stealing focus — the same politeness level for both tones, because a refused
+ * payment is not an alarm, it is an instruction to type a smaller figure.
+ */
+export function Notice({ result }: { result?: ActionResult }) {
+  if (!result) return null
+  return (
+    <p
+      role="status"
+      className={`rounded-btn border px-3 py-2 text-sm ${result.ok ? NOTICE_TONE.ok : NOTICE_TONE.error}`}
+    >
+      {result.message}
     </p>
   )
 }

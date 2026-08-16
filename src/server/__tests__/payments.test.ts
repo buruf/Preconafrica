@@ -3,6 +3,7 @@ import { RecordPaymentSchema } from '@/server/services/payments'
 
 const valid = {
   saleId: 'sale_1',
+  scheduleEntryId: 'entry_1',
   amount: '250000',
   receivedAt: '2026-08-09',
   method: 'BANK_TRANSFER',
@@ -13,6 +14,23 @@ const valid = {
 describe('RecordPaymentSchema', () => {
   it('accepts a valid payment', () => {
     expect(RecordPaymentSchema.safeParse(valid).success).toBe(true)
+  })
+
+  it('refuses to parse a payment that names no schedule entry', () => {
+    // The form cannot submit without a choice, and neither can anything else
+    // that posts to the action. There is no default and no "apply it wherever
+    // it fits" mode: a payment goes where a person put it.
+    const { scheduleEntryId, ...withoutEntry } = valid
+    expect(RecordPaymentSchema.safeParse(withoutEntry).success).toBe(false)
+    expect(RecordPaymentSchema.safeParse({ ...valid, scheduleEntryId: '' }).success).toBe(false)
+  })
+
+  it('says what to do about a missing entry rather than naming the field', () => {
+    const parsed = RecordPaymentSchema.safeParse({ ...valid, scheduleEntryId: '' })
+    expect(parsed.success).toBe(false)
+    if (!parsed.success) {
+      expect(parsed.error.issues[0]?.message).toBe('Choose which payment this settles')
+    }
   })
 
   it('rejects a zero or negative amount', () => {

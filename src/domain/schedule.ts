@@ -76,10 +76,11 @@ export class ScheduleError extends Error {
  * installments keep the numbers the contract and every issued document already
  * use: the first month is still installment 1 of 36, not 2 of 37.
  *
- * Nothing downstream needs to know this constant exists. `allocatePayment`
- * orders by sequence ascending, so a payment settles the deposit first with no
- * special case; `deriveStatus` turns it OVERDUE the day after signing like any
- * other entry; the reminder sweep sees one more unsettled entry.
+ * Almost nothing downstream needs to know this constant exists: `deriveStatus`
+ * turns the deposit OVERDUE the day after signing like any other entry, and the
+ * reminder sweep sees one more unsettled entry. Only the three label functions
+ * below care, because "0" is a correct sequence number and a terrible thing for
+ * a person to read.
  */
 export const DEPOSIT_SEQUENCE = 0
 
@@ -104,6 +105,46 @@ export function totalScheduledMinor(entries: ScheduleEntryDraft[]): bigint {
  */
 export function scheduleEntryLabel(sequence: number): string {
   return sequence === DEPOSIT_SEQUENCE ? 'Deposit' : String(sequence)
+}
+
+/**
+ * The same entry named as a sentence would open it — "Deposit", "Installment 3".
+ *
+ * `scheduleEntryLabel` is a *column* label: it lives in a table under a "#"
+ * heading where the bare number is unambiguous. This one is for prose and for
+ * the payment form's picker, where "3" on its own tells a person nothing about
+ * what they are choosing to settle.
+ */
+export function scheduleEntryTitle(sequence: number): string {
+  return sequence === DEPOSIT_SEQUENCE ? 'Deposit' : `Installment ${sequence}`
+}
+
+/**
+ * And mid-sentence — "Recorded ₦50,000.00 against the deposit."
+ *
+ * A third function rather than a `.toLowerCase()` at the call site, because
+ * "the deposit" takes an article and "installment 3" does not, and getting that
+ * wrong is how a confirmation ends up reading "against deposit".
+ */
+export function scheduleEntryPhrase(sequence: number): string {
+  return sequence === DEPOSIT_SEQUENCE ? 'the deposit' : `installment ${sequence}`
+}
+
+/**
+ * Several entries in one phrase — "the deposit, installment 1 and installment 2".
+ *
+ * Voiding is the only caller, and only because history is not uniform: a
+ * payment recorded under the old oldest-first cascade may hold allocations
+ * across a dozen installments, and withdrawing it puts every one of them back
+ * on the books. A new payment touches exactly one entry, so this returns that
+ * one phrase unchanged. Sequences are listed in the order given — the caller
+ * sorts, because it is the one that knows they came out of a database.
+ */
+export function scheduleEntryListPhrase(sequences: readonly number[]): string {
+  const parts = sequences.map(scheduleEntryPhrase)
+  if (parts.length === 0) return ''
+  if (parts.length === 1) return parts[0]
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
 }
 
 /**
