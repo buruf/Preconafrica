@@ -77,7 +77,10 @@ export interface AuditContext {
   entrySequence?: number
   /** A short phrase describing a new sale's plan: "12-month installment plan". */
   planLabel?: string
-  /** How many units a newly created project generated. */
+  /**
+   * How many units an event covered — the units a new project generated, or
+   * the units a floor plan was assigned to in one action.
+   */
   unitCount?: number
 }
 
@@ -345,6 +348,16 @@ export function describeAuditEntry(entry: AuditEntryView): { sentence: string; h
           ? ` from ${renderValue(status.from)} to ${renderValue(status.to)}`
           : ''
         return `${who} changed unit ${entry.entityLabel ?? '—'}${move}`
+      }
+      case 'unit.layout_assigned': {
+        // One entry stands for many units, so the count carries the weight the
+        // unit name usually would. Singular matters: an entry that reads
+        // "1 units" is the kind of thing that makes a reader distrust the rest
+        // of the log.
+        const count = context.unitCount
+        const many = count === undefined ? 'units' : count === 1 ? '1 unit' : `${count} units`
+        const project = entry.entityLabel ?? context.projectName ?? '—'
+        return `${who} assigned a floor plan to ${many} in ${project}`
       }
 
       case 'project.created': {

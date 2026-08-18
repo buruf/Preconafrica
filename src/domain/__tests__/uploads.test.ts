@@ -154,6 +154,21 @@ describe('blobPathFor', () => {
     ).toBe('org/org_sunrise/project/prj_alpha/unit/unt_3b/render-a1b2c3d4e5f60718.jpg')
   })
 
+  it('stores a layout that covers several units under the project, not under one of them', () => {
+    // The PDF importer uploads page 23 once for every 3-bedroom unit. Filing it
+    // under whichever unit happened to be first would put a misleading id in a
+    // public URL and imply an ownership that is not real.
+    expect(
+      blobPathFor({ orgId: org, kind: 'layout', projectId: project, token, extension: 'png' })
+    ).toBe('org/org_sunrise/project/prj_alpha/layout-a1b2c3d4e5f60718.png')
+  })
+
+  it('still refuses a render with no unit, because a render is always one unit’s', () => {
+    expect(() =>
+      blobPathFor({ orgId: org, kind: 'render', projectId: project, token, extension: 'jpg' })
+    ).toThrow('needs a unitId')
+  })
+
   it('encodes the orgId as the first path segment, which is what ownership rests on', () => {
     const path = blobPathFor({ orgId: org, kind: 'logo', token, extension: 'png' })
     expect(path.startsWith(`org/${org}/`)).toBe(true)

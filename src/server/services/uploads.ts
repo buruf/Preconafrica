@@ -46,7 +46,12 @@ export const UploadScopeSchema = z
     if (value.kind !== 'logo' && !value.projectId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Missing project for this upload.' })
     }
-    if ((value.kind === 'layout' || value.kind === 'render') && !value.unitId) {
+    // A render is always one unit's, so it must name one. A layout need not
+    // be: page 23 of a developer's brochure is *the* 3-bedroom plan, shared by
+    // every 3-bedroom unit, and the PDF importer uploads it once for the
+    // project rather than once per unit. Without a unit it is stored under the
+    // project — `assertScopeBelongsToOrg` already scopes that case.
+    if (value.kind === 'render' && !value.unitId) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Missing unit for this upload.' })
     }
   })

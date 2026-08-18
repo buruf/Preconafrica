@@ -14,3 +14,7 @@ next-env.d.ts
 *env*.txt
 *credentials*
 *.pgpass
+
+# Copied from node_modules on install and before every build, so it can never
+# drift from the pdfjs-dist version in package.json.
+public/pdf.worker.min.mjs
