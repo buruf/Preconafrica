@@ -6,6 +6,7 @@ import { ServiceError } from '@/server/services/errors'
 import { ImageUrlField, RenderUrlsField } from '@/server/services/media'
 import { deleteReplacedBlobs } from '@/server/media/blob'
 import { toMinor } from '@/domain/currency'
+import { ownedBlobPathname } from '@/domain/uploads'
 import type { InstallmentFeeMode } from '@/domain/schedule'
 import { recordAudit } from '@/server/audit/record'
 import { diffValues, image, money, number, text, type AuditFields } from '@/domain/audit'
@@ -324,4 +325,99 @@ export async function reserveUnit(
     data: { status: to }
   })
   return result.count === 1
+}
+
+export const AssignLayoutSchema = z.object({
+  projectId: z.string().min(1),
+  imageUrl: z.string().url(),
+  // A ceiling rather than an unbounded list: one project's units, not a
+  // request that asks the database to update every row it can name.
+  unitIds: z.array(z.string().min(1)).min(1, 'Choose at least one unit.').max(500)
+})
+
+/**
+ * One drawing onto many units, in a single transaction with a single audit
+ * entry.
+ *
+ * This is what makes the PDF import worth having: page 23 of a developer's
+ * brochure is *the* 3-bedroom plan, and there are twenty-four 3-bedroom units.
+ * Assigning it unit by unit would be twenty-four writes, twenty-four audit rows
+ * and twenty-four chances to stop halfway.
+ *
+ * Three things are checked before anything is written, and each is checked
+ * against the database rather than against what the browser claimed:
+ *
+ *   1. the project belongs to the actor's organisation;
+ *   2. every unit id belongs to *that* project — a partial match is refused
+ *      outright rather than silently assigning the subset that resolved;
+ *   3. the image is a blob this organisation uploaded. `ownedBlobPathname`
+ *      returns null for a pasted external URL and for another tenant's blob
+ *      alike, so a crafted request cannot point a unit's drawing at a host we
+ *      do not control.
+ *
+ * **No blob sweep.** `updateUnit` calls `deleteReplacedBlobs` so a replaced
+ * drawing does not linger; this deliberately does not. Under group assignment
+ * many units share one URL, so deleting "the old one" per unit would delete a
+ * blob the units *not* in this batch still point at — and a buyer's floor-plan
+ * PDF would then say no plan exists for a unit that has one. An orphaned blob
+ * costs storage. A deleted one that is still referenced costs the document.
+ */
+export async function assignLayoutToUnits(
+  actor: SessionActor,
+  input: z.infer<typeof AssignLayoutSchema>
+): Promise<{ assigned: number }> {
+  assertRole(actor, ['ADMIN'])
+
+  const parsed = AssignLayoutSchema.safeParse(input)
+  if (!parsed.success) {
+    throw new ServiceError(
+      parsed.error.issues[0]?.message ?? 'Choose at least one unit.',
+      'VALIDATION'
+    )
+  }
+
+  const project = await prisma.project.findFirst({
+    where: { id: parsed.data.projectId, orgId: actor.orgId },
+    select: { id: true, name: true }
+  })
+  if (!project) throw new ServiceError('Project not found', 'NOT_FOUND')
+
+  if (ownedBlobPathname(parsed.data.imageUrl, actor.orgId) === null) {
+    throw new ServiceError('That image is not one this organisation uploaded.', 'VALIDATION')
+  }
+
+  const units = await prisma.unit.findMany({
+    where: { id: { in: parsed.data.unitIds }, projectId: project.id },
+    select: { id: true }
+  })
+  if (units.length !== parsed.data.unitIds.length) {
+    throw new ServiceError('Some of those units are not in this project.', 'VALIDATION')
+  }
+
+  const ids = units.map((unit) => unit.id)
+
+  await prisma.$transaction(async (tx) => {
+    await tx.unit.updateMany({
+      where: { id: { in: ids } },
+      data: { layoutImageUrl: parsed.data.imageUrl }
+    })
+
+    // No `changes` array. Across twenty-four units the previous value differs
+    // per unit — some had no plan, some had an older one — so a single
+    // before/after pair would be true of some and a lie about the rest. The
+    // sentence and the count are honest; a fabricated diff would not be.
+    await recordAudit(tx, actor, {
+      action: 'unit.layout_assigned',
+      entityType: 'Project',
+      entityId: project.id,
+      entityLabel: project.name,
+      context: {
+        projectId: project.id,
+        projectName: project.name,
+        unitCount: ids.length
+      }
+    })
+  })
+
+  return { assigned: ids.length }
 }
