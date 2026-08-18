@@ -399,3 +399,31 @@ describe('where a row links', () => {
     ).toBeNull()
   })
 })
+
+describe('a floor plan assigned to many units', () => {
+  const assigned = entry({
+    actorName: 'Adaeze Okonkwo',
+    action: 'unit.layout_assigned',
+    entityType: 'Project',
+    entityId: 'p1',
+    entityLabel: 'Khaleel Suites',
+    context: { projectId: 'p1', projectName: 'Khaleel Suites', unitCount: 24 }
+  })
+
+  it('says how many units it covered, and where', () => {
+    expect(describeAuditEntry(assigned).sentence).toBe(
+      'Adaeze Okonkwo assigned a floor plan to 24 units in Khaleel Suites'
+    )
+  })
+
+  it('does not say "1 units"', () => {
+    const one = entry({ ...assigned, context: { ...assigned.context, unitCount: 1 } })
+    expect(describeAuditEntry(one).sentence).toBe(
+      'Adaeze Okonkwo assigned a floor plan to 1 unit in Khaleel Suites'
+    )
+  })
+
+  it('links to the project', () => {
+    expect(describeAuditEntry(assigned).href).toBe('/projects/p1')
+  })
+})
