@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { requireStaff } from '@/server/session'
 import { getProjectInventory } from '@/server/services/units'
@@ -64,11 +65,21 @@ export default async function ProjectPage({ params }: { params: { id: string } }
         {/* ADMIN only, and the only project-edit surface in the app — see
             HeroImageForm for why it is one field rather than a settings page. */}
         {actor.role === 'ADMIN' ? (
-          <HeroImageForm
-            projectId={project.id}
-            heroImageUrl={project.heroImageUrl}
-            projectName={project.name}
-          />
+          <>
+            <HeroImageForm
+              projectId={project.id}
+              heroImageUrl={project.heroImageUrl}
+              projectName={project.name}
+            />
+            {/* The other way a drawing gets in: a developer's brochure, split
+                into pages, each assigned to the units it covers. */}
+            <Link
+              href={`/projects/${project.id}/plans/import`}
+              className="mt-2 inline-flex min-h-11 items-center text-sm font-semibold text-muted underline"
+            >
+              Import floor plans from a PDF
+            </Link>
+          </>
         ) : null}
       </div>
 
