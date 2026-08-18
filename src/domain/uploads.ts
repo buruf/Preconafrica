@@ -161,9 +161,12 @@ export interface BlobPathInput {
   /** The tenant. First segment of every path, so a prefix listing is per-org. */
   orgId: string
   kind: UploadKind
-  /** Required for 'building'; required with `unitId` for 'layout' and 'render'. */
+  /** Required for everything but 'logo'. */
   projectId?: string
-  /** Required for 'layout' and 'render'. */
+  /**
+   * Required for 'render'. Optional for 'layout': a drawing that covers several
+   * units is stored under the project instead.
+   */
   unitId?: string
   /** Random, generated server-side. Never anything the uploader supplied. */
   token: string
@@ -176,6 +179,7 @@ export interface BlobPathInput {
  *
  *   org/{orgId}/logo-{token}.png
  *   org/{orgId}/project/{projectId}/hero-{token}.jpg
+ *   org/{orgId}/project/{projectId}/layout-{token}.jpg          (shared plan)
  *   org/{orgId}/project/{projectId}/unit/{unitId}/layout-{token}.jpg
  *   org/{orgId}/project/{projectId}/unit/{unitId}/render-{token}.jpg
  *
@@ -203,6 +207,12 @@ export function blobPathFor(input: BlobPathInput): string {
   const project = `${org}/project/${segment('projectId', input.projectId)}`
 
   if (input.kind === 'building') return `${project}/hero-${token}.${ext}`
+
+  // A layout without a unit is a drawing shared by several of them — the PDF
+  // importer uploads one page for every 3-bedroom unit at once. It belongs to
+  // the project, and storing it under any one of the units it covers would put
+  // a misleading id in a public URL. A render always names its unit.
+  if (input.kind === 'layout' && !input.unitId) return `${project}/layout-${token}.${ext}`
 
   if (!input.unitId) throw new BlobPathError(`A ${input.kind} image needs a unitId`)
   const unit = `${project}/unit/${segment('unitId', input.unitId)}`
