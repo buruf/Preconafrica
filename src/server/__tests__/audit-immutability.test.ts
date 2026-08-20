@@ -131,6 +131,15 @@ describe('the database trigger', () => {
     expect(SQL).toMatch(/BEFORE TRUNCATE ON "AuditEntry"/)
   })
 
+  it('holds the platform operator to the same standard', () => {
+    // A platform admin can create and suspend developers. The record of having
+    // done so must not be something they can quietly remove, so the separate
+    // table gets the identical three triggers rather than a weaker promise.
+    expect(SQL).toMatch(/BEFORE UPDATE ON "PlatformAuditEntry"/)
+    expect(SQL).toMatch(/BEFORE DELETE ON "PlatformAuditEntry"/)
+    expect(SQL).toMatch(/BEFORE TRUNCATE ON "PlatformAuditEntry"/)
+  })
+
   it('raises rather than silently discarding the statement', () => {
     // A rule that does nothing would make a DELETE appear to succeed while
     // changing nothing, which is how somebody concludes the log is broken.
@@ -142,7 +151,16 @@ describe('the database trigger', () => {
     // `prisma db push` recreates tables and knows nothing about triggers, so
     // this file runs again on every push and must survive doing so.
     expect(SQL).toContain('CREATE OR REPLACE FUNCTION')
-    expect((SQL.match(/DROP TRIGGER IF EXISTS/g) ?? []).length).toBe(3)
+
+    // Every trigger is dropped before it is created — the property, rather
+    // than a count. This used to assert exactly 3, which meant adding a second
+    // append-only table failed the test for being *more* protected. Comparing
+    // the two totals keeps the guarantee and stops the number from being a
+    // thing to remember.
+    const drops = (SQL.match(/DROP TRIGGER IF EXISTS/g) ?? []).length
+    const creates = (SQL.match(/CREATE TRIGGER/g) ?? []).length
+    expect(creates).toBeGreaterThanOrEqual(3)
+    expect(drops).toBe(creates)
   })
 
   it('is wired to run after every schema push', () => {

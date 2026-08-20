@@ -57,5 +57,5 @@ if (result.status !== 0) {
 }
 
 console.log(
-  `${GREEN}  AuditEntry is append-only${OFF} ${DIM}(UPDATE, DELETE and TRUNCATE all refused by trigger)${OFF}\n`
+  `${GREEN}  AuditEntry and PlatformAuditEntry are append-only${OFF} ${DIM}(UPDATE, DELETE and TRUNCATE all refused by trigger)${OFF}\n`
 )

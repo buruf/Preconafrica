@@ -54,7 +54,51 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           name: user.fullName,
           orgId: user.orgId,
           role: user.role,
-          buyerId: user.buyer?.id ?? null
+          buyerId: user.buyer?.id ?? null,
+          kind: 'user' as const
+        }
+      }
+    }),
+    /**
+     * The platform operator's door, used only by /platform/login.
+     *
+     * A second provider rather than a branch inside the first, so the two
+     * lookups can never fall through to one another: this one reads
+     * `PlatformUser` and nothing else, and a developer's email typed here
+     * finds nothing however valid their password is. The reverse holds too.
+     *
+     * The same dummy-hash timing defence, for a sharper reason than usual:
+     * this is the account that can create and suspend every developer on the
+     * platform, so whether an address belongs to an operator must not be
+     * learnable from how fast the form answers.
+     */
+    Credentials({
+      id: 'platform',
+      credentials: { email: {}, password: {} },
+      async authorize(raw) {
+        const parsed = CredentialsSchema.safeParse(raw)
+        if (!parsed.success) return null
+
+        const admin = await prisma.platformUser.findUnique({
+          where: { email: parsed.data.email.toLowerCase() }
+        })
+
+        const hash = admin?.passwordHash ?? DUMMY_PASSWORD_HASH
+        const ok = await bcrypt.compare(parsed.data.password, hash)
+        if (!admin || !ok) return null
+
+        // `orgId` is the empty string and `role` is a placeholder: neither is
+        // ever read for a platform session, because `requireUserOrNull`
+        // refuses `kind === 'platform'` before either could matter. They exist
+        // only to satisfy the shared token shape. `kind` is the real claim.
+        return {
+          id: admin.id,
+          email: admin.email,
+          name: admin.fullName,
+          orgId: '',
+          role: 'ADMIN' as const,
+          buyerId: null,
+          kind: 'platform' as const
         }
       }
     })
@@ -69,6 +113,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.orgId = user.orgId
         token.role = user.role
         token.buyerId = user.buyerId
+        // Stamped at sign-in like everything else here, and never widened
+        // afterwards: a session cannot change which door it came through.
+        token.kind = user.kind ?? 'user'
         token.authTime = Math.floor(Date.now() / 1000)
       }
       return token
@@ -78,6 +125,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       session.user.orgId = token.orgId as string
       session.user.role = token.role as 'ADMIN' | 'AGENT' | 'BUYER'
       session.user.buyerId = (token.buyerId as string | null) ?? null
+      // Absent on tokens minted before this claim existed, and read as a
+      // developer's session by both guards. Never defaulted to 'platform'.
+      session.user.kind = (token.kind as 'user' | 'platform' | undefined) ?? 'user'
       // Session age comes from our own `authTime` claim, stamped once at
       // sign-in, and deliberately NOT from `iat`.
       //

@@ -87,14 +87,35 @@ export async function requireUserOrNull(): Promise<SessionActor | null> {
   const session = await auth()
   if (!session?.user?.id) return null
 
+  // Before anything else, and before the user table is touched at all: a
+  // platform operator's token must never resolve to a developer's session.
+  // They have no organisation, and every query below this layer is scoped by
+  // one taken from the actor — `where: { orgId: undefined }` is not "no
+  // organisation" in Prisma, it is *no constraint*, and returns every tenant's
+  // rows. A token carrying no `kind` was minted before the claim existed and
+  // is read as a developer's, which is what it is.
+  if (session.user.kind === 'platform') return null
+
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
-    select: { disabledAt: true, passwordChangedAt: true }
+    // The organisation's suspension rides along on a query already being made
+    // for the two revocation columns — one relation, no extra round trip.
+    select: {
+      disabledAt: true,
+      passwordChangedAt: true,
+      org: { select: { suspendedAt: true } }
+    }
   })
   if (!user || user.disabledAt !== null) return null
   if (sessionOutdatedByPasswordChange(user.passwordChangedAt, session.user.tokenIssuedAt)) {
     return null
   }
+
+  // A suspended developer's staff stop working immediately; their buyers do
+  // not. The dispute is between the platform and the developer, and someone
+  // paying for a flat keeps the contracts and receipts they already hold.
+  // Nothing is deleted either way — see `Organization.suspendedAt`.
+  if (user.org.suspendedAt !== null && session.user.role !== 'BUYER') return null
 
   return {
     userId: session.user.id,
@@ -123,4 +144,64 @@ export async function requireBuyer(): Promise<SessionActor & { buyerId: string }
   assertRole(actor, ['BUYER'])
   if (!actor.buyerId) throw new AuthorizationError()
   return { ...actor, buyerId: actor.buyerId }
+}
+
+/* ------------------------------------------------------- the platform side */
+
+/**
+ * A platform operator — whoever runs PreCon Africa itself.
+ *
+ * A distinct type from `SessionActor`, not a variant of it, and the `kind`
+ * discriminator is what makes the two impossible to confuse at a call site.
+ * There is no `orgId` here because there is no organisation: this actor exists
+ * precisely to act across all of them, and giving it a field every org-scoped
+ * query reads would be handing that query a value it must never receive.
+ */
+export interface PlatformActor {
+  kind: 'platform'
+  userId: string
+  fullName: string
+  email: string
+}
+
+/**
+ * `requirePlatformAdmin` for callers that must answer rather than navigate.
+ *
+ * Revocation works exactly as it does for a developer — `disabledAt` and
+ * `passwordChangedAt`, checked against the database on every request — because
+ * the account that can create and suspend every developer on the platform is
+ * the last one that should outlive its own password change.
+ */
+export async function requirePlatformAdminOrNull(): Promise<PlatformActor | null> {
+  const session = await auth()
+  if (!session?.user?.id) return null
+
+  // Strict equality against 'platform', so a developer's token — including an
+  // ADMIN's, and including an older one carrying no `kind` at all — can never
+  // be promoted here. The developer side of this check lives in
+  // `requireUserOrNull`; between them the two session types are disjoint.
+  if (session.user.kind !== 'platform') return null
+
+  const admin = await prisma.platformUser.findUnique({
+    where: { id: session.user.id },
+    select: { disabledAt: true, passwordChangedAt: true }
+  })
+  if (!admin || admin.disabledAt !== null) return null
+  if (sessionOutdatedByPasswordChange(admin.passwordChangedAt, session.user.tokenIssuedAt)) {
+    return null
+  }
+
+  return {
+    kind: 'platform',
+    userId: session.user.id,
+    fullName: session.user.name ?? '',
+    email: session.user.email ?? ''
+  }
+}
+
+/** The guard every platform page and action starts with. */
+export async function requirePlatformAdmin(): Promise<PlatformActor> {
+  const actor = await requirePlatformAdminOrNull()
+  if (!actor) redirect('/platform/login')
+  return actor
 }
