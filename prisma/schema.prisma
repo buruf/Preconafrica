@@ -84,13 +84,24 @@ enum NotificationStatus {
 }
 
 model Organization {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   name        String
-  slug        String   @unique
+  slug        String    @unique
   logoUrl     String?
   /// Monotonic counter backing per-org document numbering.
-  documentSeq Int      @default(0)
-  createdAt   DateTime @default(now())
+  documentSeq Int       @default(0)
+  /// Set by a platform admin to stop this developer's staff signing in.
+  ///
+  /// Checked in `requireUser` on every authenticated request, alongside
+  /// `User.disabledAt`, so a suspension bites on the next navigation rather
+  /// than whenever a seven-day JWT happens to expire.
+  ///
+  /// Deliberately does *not* lock out buyers. A developer's dispute with the
+  /// platform is not their buyers' dispute: the contracts, receipts and
+  /// statements someone already holds for a flat they are paying for stay
+  /// downloadable. Nothing financial is ever deleted by a suspension.
+  suspendedAt DateTime?
+  createdAt   DateTime  @default(now())
 
   users         User[]
   projects      Project[]
@@ -161,17 +172,17 @@ model PasswordResetToken {
 }
 
 model Project {
-  id                     String            @id @default(cuid())
-  orgId                  String
-  name                   String
-  location               String
+  id                       String             @id @default(cuid())
+  orgId                    String
+  name                     String
+  location                 String
   /// ISO-4217 code. There is no default — every project states its own.
-  currency               String
-  expectedCompletion     DateTime
-  floors                 Int
-  unitsPerFloor          Int
-  startFloor             Int               @default(1)
-  namingPattern          String
+  currency                 String
+  expectedCompletion       DateTime
+  floors                   Int
+  unitsPerFloor            Int
+  startFloor               Int                @default(1)
+  namingPattern            String
   /// The building's photo, as an `https` URL an admin pasted. Nullable, and
   /// nullable is the ordinary case: a project with no photo shows a labelled
   /// placeholder wherever the photo would go, so nothing about a page's or a
@@ -179,26 +190,26 @@ model Project {
   /// pipeline behind this (no blob storage, no new service, no cost) — the URL
   /// is checked by `checkImageUrl` at input time and re-checked by the
   /// server-side SSRF guard before any PDF embeds it.
-  heroImageUrl           String?
+  heroImageUrl             String?
   /// Which of the two fields below is the project's default charge. PERCENT
   /// reads `installmentMarkupBps`; FIXED reads `installmentFixedFeeMinor`. The
   /// unused one is kept at zero rather than nulled, so switching a project's
   /// mode never loses the rate it used to charge. See `InstallmentFeeMode`.
-  installmentFeeMode     InstallmentFeeMode @default(PERCENT)
+  installmentFeeMode       InstallmentFeeMode @default(PERCENT)
   /// The PERCENT default, in basis points of the financed amount (price less
   /// deposit). 1000 = 10%. Basis points rather than a decimal percentage so the
   /// charge is an exact integer and the whole calculation can stay in BigInt.
   /// Int, not BigInt: this is a count of hundredths of a percent, capped at
   /// 10000, never an amount of money.
-  installmentMarkupBps   Int               @default(0)
+  installmentMarkupBps     Int                @default(0)
   /// The FIXED default: a flat charge in minor units of the project's currency,
   /// the same whatever the unit costs. BigInt for the reason every other money
   /// column is one — a NGN fee overflows Int32 as readily as a NGN price does.
-  installmentFixedFeeMinor BigInt          @default(0)
-  reminderDaysBefore     Int               @default(7)
-  overdueNoticeDaysAfter Int               @default(3)
-  reminderChannels       ReminderChannel[] @default([EMAIL])
-  createdAt              DateTime          @default(now())
+  installmentFixedFeeMinor BigInt             @default(0)
+  reminderDaysBefore       Int                @default(7)
+  overdueNoticeDaysAfter   Int                @default(3)
+  reminderChannels         ReminderChannel[]  @default([EMAIL])
+  createdAt                DateTime           @default(now())
 
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   units Unit[]
@@ -257,15 +268,15 @@ model Buyer {
 }
 
 model Sale {
-  id              String     @id @default(cuid())
+  id              String             @id @default(cuid())
   orgId           String
   projectId       String
-  unitId          String     @unique
+  unitId          String             @unique
   buyerId         String
   planType        PlanType
   /// Snapshot at signing. Repricing the unit must not alter a signed contract.
   priceMinor      BigInt
-  depositMinor    BigInt     @default(0)
+  depositMinor    BigInt             @default(0)
   /// All three snapshotted at signing, for exactly the reason priceMinor and
   /// currency are: re-rating the project — or switching it from a percentage to
   /// a flat fee, or the reverse — must not silently restate a contract someone
@@ -276,15 +287,15 @@ model Sale {
   /// bps, so nothing already agreed changes value.
   feeMode         InstallmentFeeMode @default(PERCENT)
   /// Basis points of the financed amount, read when feeMode is PERCENT.
-  markupBps       Int        @default(0)
+  markupBps       Int                @default(0)
   /// A flat charge in minor units, read when feeMode is FIXED.
-  fixedFeeMinor   BigInt     @default(0)
+  fixedFeeMinor   BigInt             @default(0)
   currency        String
   termMonths      Int?
   signedAt        DateTime
-  status          SaleStatus @default(ACTIVE)
+  status          SaleStatus         @default(ACTIVE)
   createdByUserId String
-  createdAt       DateTime   @default(now())
+  createdAt       DateTime           @default(now())
 
   org             Organization    @relation(fields: [orgId], references: [id], onDelete: Restrict)
   project         Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
@@ -544,4 +555,57 @@ model AuditEntry {
   /// an organisation ever reaches millions of rows, add
   /// `@@index([orgId, entityType, createdAt])` then, on evidence.
   @@index([orgId, createdAt])
+}
+
+/// A platform operator — the person who runs PreCon Africa itself, not a
+/// developer using it.
+///
+/// A separate table rather than a nullable `User.orgId` plus a PLATFORM role,
+/// and the reason is worth stating because the tempting version is genuinely
+/// dangerous. Every query in this system is scoped `where: { orgId: ... }`
+/// with the id taken from the session — and in Prisma, `orgId: undefined` does
+/// not mean "no organisation", it means *no constraint*, returning every
+/// tenant's rows. Making that column nullable would convert the one invariant
+/// this whole codebase rests on into a runtime hazard across dozens of
+/// financial queries, silently, with no type error at any call site.
+///
+/// Kept apart, a platform admin has no row in `User` at all: no org-scoped
+/// query can return them, and `assertRole` can never admit them. The
+/// separation is structural rather than remembered.
+///
+/// Carries the same two revocation columns as `User`, for the same reasons —
+/// see the comments there.
+model PlatformUser {
+  id                String    @id @default(cuid())
+  email             String    @unique
+  passwordHash      String
+  fullName          String
+  disabledAt        DateTime?
+  passwordChangedAt DateTime?
+  createdAt         DateTime  @default(now())
+}
+
+/// What a platform operator did, append-only.
+///
+/// Separate from `AuditEntry` because that log is org-scoped and a platform
+/// action crosses organisations — and because the platform admin deliberately
+/// cannot read a developer's data, so an entry written into a developer's log
+/// would be one they could never see. The same Postgres trigger that makes
+/// `AuditEntry` refuse UPDATE, DELETE and TRUNCATE is applied to this table by
+/// `scripts/ensure-audit-immutability.mjs`.
+///
+/// Known gap: a developer cannot yet see in their own log that they were
+/// suspended, or by whom. Worth adding; not worth blocking the console on.
+model PlatformAuditEntry {
+  id          String   @id @default(cuid())
+  actorUserId String
+  actorName   String
+  action      String
+  entityType  String
+  entityId    String
+  entityLabel String?
+  context     Json     @default("{}")
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
 }

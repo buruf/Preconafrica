@@ -41,3 +41,26 @@ DROP TRIGGER IF EXISTS audit_entry_no_truncate ON "AuditEntry";
 CREATE TRIGGER audit_entry_no_truncate
   BEFORE TRUNCATE ON "AuditEntry"
   FOR EACH STATEMENT EXECUTE FUNCTION audit_entry_is_append_only();
+
+-- The platform operator's own log, held to the identical standard.
+--
+-- Separate table, same guarantee: a platform admin can suspend a developer, and
+-- the record of having done so must not be something they can quietly remove.
+-- The function above is reused verbatim — its message names the table only in
+-- the generic ("AuditEntry is append-only"), which is close enough to be
+-- unambiguous and avoids a second near-identical function drifting from this one.
+
+DROP TRIGGER IF EXISTS platform_audit_entry_no_update ON "PlatformAuditEntry";
+CREATE TRIGGER platform_audit_entry_no_update
+  BEFORE UPDATE ON "PlatformAuditEntry"
+  FOR EACH ROW EXECUTE FUNCTION audit_entry_is_append_only();
+
+DROP TRIGGER IF EXISTS platform_audit_entry_no_delete ON "PlatformAuditEntry";
+CREATE TRIGGER platform_audit_entry_no_delete
+  BEFORE DELETE ON "PlatformAuditEntry"
+  FOR EACH ROW EXECUTE FUNCTION audit_entry_is_append_only();
+
+DROP TRIGGER IF EXISTS platform_audit_entry_no_truncate ON "PlatformAuditEntry";
+CREATE TRIGGER platform_audit_entry_no_truncate
+  BEFORE TRUNCATE ON "PlatformAuditEntry"
+  FOR EACH STATEMENT EXECUTE FUNCTION audit_entry_is_append_only();
