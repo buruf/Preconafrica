@@ -4,7 +4,11 @@ import { revalidatePath } from 'next/cache'
 import { signOut } from '@/server/auth'
 import { requirePlatformAdmin } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
-import { createDeveloper, setDeveloperSuspended } from '@/server/services/platform'
+import {
+  changePlatformPassword,
+  createDeveloper,
+  setDeveloperSuspended
+} from '@/server/services/platform'
 
 /**
  * Every action here starts with `requirePlatformAdmin`, which refuses a
@@ -57,4 +61,25 @@ export async function setSuspendedAction(orgId: string, suspended: boolean) {
 
 export async function platformSignOutAction() {
   await signOut({ redirectTo: '/platform/login' })
+}
+
+export async function changePlatformPasswordAction(_prev: string | undefined, formData: FormData) {
+  const actor = await requirePlatformAdmin()
+
+  try {
+    await changePlatformPassword(
+      actor,
+      String(formData.get('currentPassword') ?? ''),
+      String(formData.get('newPassword') ?? ''),
+      new Date()
+    )
+  } catch (error) {
+    return error instanceof ServiceError ? error.message : 'Your password could not be changed.'
+  }
+
+  // Signing out is not tidiness — the change just revoked this very session,
+  // so the next navigation would bounce to the login screen anyway. Doing it
+  // deliberately means landing there with an explanation instead of what looks
+  // like a random logout.
+  await signOut({ redirectTo: '/platform/login?changed=1' })
 }

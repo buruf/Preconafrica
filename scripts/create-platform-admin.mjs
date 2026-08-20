@@ -28,11 +28,13 @@
  * someone else has the old one.
  */
 
+import { randomBytes } from 'node:crypto'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 
 const RED = '[31m'
 const GREEN = '[32m'
+const BOLD = '[1m'
 const DIM = '[2m'
 const OFF = '[0m'
 
@@ -43,14 +45,30 @@ function fail(message) {
 
 const email = (process.env.PLATFORM_ADMIN_EMAIL ?? '').trim().toLowerCase()
 const fullName = (process.env.PLATFORM_ADMIN_NAME ?? '').trim()
-const password = process.env.PLATFORM_ADMIN_PASSWORD ?? ''
 
 if (!email || !email.includes('@')) fail('Set PLATFORM_ADMIN_EMAIL to a valid email address.')
 if (!fullName) fail('Set PLATFORM_ADMIN_NAME.')
 
-// Twelve is not a strong password on its own, but this is the account that can
-// create and suspend every developer on the platform, so the floor is not zero.
-if (password.length < 12) fail('Set PLATFORM_ADMIN_PASSWORD to at least 12 characters.')
+/**
+ * The password is generated unless one is supplied, which is the same bargain
+ * the console offers when it creates a developer's first admin: 144 bits of
+ * randomness, hashed immediately, shown once and stored nowhere readable.
+ *
+ * Generating beats asking. A password someone invents at a terminal to get
+ * started tends to be weak and tends to survive — and this account governs
+ * every developer on the platform. The operator replaces it at
+ * /platform/account, which stamps `passwordChangedAt` and kills every session
+ * opened with the temporary one, including this one.
+ *
+ * PLATFORM_ADMIN_PASSWORD is still honoured for anyone who would rather choose,
+ * and is held to a floor when they do.
+ */
+const supplied = process.env.PLATFORM_ADMIN_PASSWORD
+if (supplied !== undefined && supplied.length < 12) {
+  fail('PLATFORM_ADMIN_PASSWORD must be at least 12 characters. Omit it to have one generated.')
+}
+const password = supplied ?? randomBytes(18).toString('base64url')
+const generated = supplied === undefined
 
 const prisma = new PrismaClient()
 
@@ -70,6 +88,14 @@ try {
 
   console.log(
     `\n${GREEN}  ${existing ? 'Updated' : 'Created'} platform operator ${admin.email}${OFF}\n` +
+      // Printed once, and only when this script chose it. Nothing stores it in
+      // readable form, so there is no second chance to look it up — the way
+      // back is to re-run this, which mints a new one.
+      (generated
+        ? `\n${BOLD}  Temporary password: ${password}${OFF}\n` +
+          `${DIM}  Shown once — only a bcrypt hash is stored, so it cannot be read back.${OFF}\n` +
+          `${DIM}  Change it at /platform/account once you are in.${OFF}\n`
+        : '') +
       `${DIM}  Sign in at /platform/login. Any session opened before now has been revoked.${OFF}\n`
   )
 } catch (error) {
