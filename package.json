@@ -17,6 +17,9 @@
     "predb:push": "node scripts/which-db.mjs",
     "postdb:push": "node scripts/ensure-audit-immutability.mjs",
     "db:which": "node scripts/which-db.mjs",
+    "env:prod": "vercel env pull .env.prod --environment=production --yes",
+    "db:diff:prod": "node scripts/db-prod.mjs",
+    "db:push:prod": "node scripts/db-prod.mjs --apply",
     "platform:create-admin": "node scripts/create-platform-admin.mjs"
   },
   "prisma": {
