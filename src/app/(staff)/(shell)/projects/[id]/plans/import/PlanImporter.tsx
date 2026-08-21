@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Button, Card, ErrorText } from '@/components/ui'
+import { Button, ButtonLink, Card, ErrorText } from '@/components/ui'
 import { uploadOne } from '@/components/upload-client'
 import { suggestUnitsForPage } from '@/domain/plan-import'
 import { assignPlanAction } from './actions'
@@ -50,7 +50,7 @@ interface RenderedPage {
   height: number
 }
 
-type PageOutcome = { pageNumber: number; ok: boolean; message: string }
+type PageOutcome = { pageNumber: number; ok: boolean; message: string; units?: number }
 
 export function PlanImporter({
   projectId,
@@ -220,6 +220,7 @@ export function PlanImporter({
               : {
                   pageNumber,
                   ok: true,
+                  units: unitIds.size,
                   message: `assigned to ${unitIds.size} ${unitIds.size === 1 ? 'unit' : 'units'}`
                 }
           )
@@ -238,6 +239,62 @@ export function PlanImporter({
       setBusy(undefined)
       setOutcomes(results)
     }
+  }
+
+  /**
+   * Every chosen page landed. Shown *instead of* the picker, not beneath it.
+   *
+   * The first version left the whole form on screen with a two-line result
+   * underneath, and the first real import was run five times over because
+   * nothing said it had worked — eight redundant uploads for two drawings.
+   * A result that does not visibly end the task reads as a result that did
+   * not happen.
+   */
+  const finished = outcomes.length > 0 && outcomes.every((outcome) => outcome.ok)
+
+  if (finished) {
+    const units = outcomes.reduce((sum, outcome) => sum + (outcome.units ?? 0), 0)
+
+    return (
+      <div className="mt-4">
+        <Card>
+          <h2 className="text-lg font-semibold text-ink">Floor plans imported</h2>
+          <p className="mt-2 text-sm text-muted">
+            {outcomes.length} {outcomes.length === 1 ? 'page' : 'pages'} assigned to {units}{' '}
+            {units === 1 ? 'unit' : 'units'}. Each unit now shows its plan, and buyers can
+            download it from their own documents.
+          </p>
+
+          <ul className="mt-3 space-y-1 text-sm text-ink">
+            {outcomes.map((outcome) => (
+              <li key={outcome.pageNumber}>
+                Page {outcome.pageNumber} — {outcome.message}
+              </li>
+            ))}
+          </ul>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <ButtonLink href={`/projects/${projectId}`}>Back to the project</ButtonLink>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                // Deliberately a full reset rather than "run it again": the
+                // work just done is finished, and the common next action is a
+                // different PDF, not the same one twice.
+                setOutcomes([])
+                setPages([])
+                setChosen(new Map())
+                setFile(null)
+                setError(undefined)
+              }}
+            >
+              Import another PDF
+            </Button>
+          </div>
+        </Card>
+      </div>
+    )
   }
 
   return (

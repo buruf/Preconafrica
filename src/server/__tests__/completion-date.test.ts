@@ -30,6 +30,25 @@ function parse(expectedCompletion: string) {
   return CreateProjectSchema.safeParse({ ...VALID, expectedCompletion })
 }
 
+/**
+ * Refused *because of the date*, not merely refused.
+ *
+ * `success === false` alone is a trap. If `VALID` ever drifts out of step with
+ * the schema — a new required field, say — every refusal test would keep
+ * passing while testing nothing whatsoever. An earlier draft of this file did
+ * exactly that: it was missing `unitTypes` and both reminder fields, so all
+ * four refusals passed for reasons that had nothing to do with the date, and
+ * would have gone on passing if the bound had never been written.
+ *
+ * Naming the path is what keeps the assertion attached to the thing under test.
+ */
+function refusedForTheDate(expectedCompletion: string): boolean {
+  const result = parse(expectedCompletion)
+  return (
+    !result.success && result.error.issues.some((issue) => issue.path[0] === 'expectedCompletion')
+  )
+}
+
 describe('expectedCompletion', () => {
   it('accepts an ordinary future completion', () => {
     expect(parse('2028-12-31').success).toBe(true)
@@ -40,19 +59,20 @@ describe('expectedCompletion', () => {
   })
 
   it('refuses the six-digit year a date input will happily produce', () => {
-    const result = parse('202812-12-01')
-    expect(result.success).toBe(false)
+    // The one that prompted all this: typing "202812" into a native date field
+    // puts all six digits in the year segment.
+    expect(refusedForTheDate('202812-12-01')).toBe(true)
   })
 
   it('refuses a year far in the future', () => {
-    expect(parse('9999-01-01').success).toBe(false)
+    expect(refusedForTheDate('9999-01-01')).toBe(true)
   })
 
   it('refuses a year before 1900, which is as certainly a typo', () => {
-    expect(parse('0202-12-01').success).toBe(false)
+    expect(refusedForTheDate('0202-12-01')).toBe(true)
   })
 
   it('still refuses something that is not a date at all', () => {
-    expect(parse('next tuesday').success).toBe(false)
+    expect(refusedForTheDate('next tuesday')).toBe(true)
   })
 })
