@@ -238,6 +238,8 @@ export function Field({
   defaultValue,
   placeholder,
   hint,
+  min,
+  max,
   onChange,
   children
 }: {
@@ -250,6 +252,18 @@ export function Field({
   defaultValue?: string | number
   placeholder?: string
   hint?: string
+  /**
+   * Passed straight through to the input. For `type="date"` these are what
+   * stop a browser accepting a six-digit year: a native date field allows any
+   * year up to 275760, so typing "202812" in one go lands entirely in the year
+   * segment rather than reading as December 2028. Bounds make the browser
+   * refuse it while the person is still looking at the field.
+   *
+   * A hint to the browser only — never a check. The server validates the same
+   * range, because a crafted request never touches this input at all.
+   */
+  min?: string | number
+  max?: string | number
   /**
    * Optional, and the input stays uncontrolled either way — same contract as
    * `Select`'s. The new-project form uses it to follow "Units / floor" and
@@ -272,6 +286,8 @@ export function Field({
           required={required}
           defaultValue={defaultValue}
           placeholder={placeholder}
+          min={min}
+          max={max}
           onChange={onChange}
           className={CONTROL_CLASS}
         />

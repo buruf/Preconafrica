@@ -166,7 +166,21 @@ export function NewProjectForm({
             </Select>
           </Field>
 
-          <Field label="Expected completion" name="expectedCompletion" type="date" required />
+          {/* Bounded, because an unbounded native date field accepts a year up
+              to 275760 — typing "202812" in one go puts all six digits in the
+              year segment instead of reading as December 2028, and the form
+              then fails with "Invalid date" for a reason nobody can see. The
+              same range is enforced server-side; this only moves the refusal
+              to where the person is still looking. */}
+          <Field
+            label="Expected completion"
+            name="expectedCompletion"
+            type="date"
+            required
+            min="1900-01-01"
+            max="2199-12-31"
+            hint="When the building is expected to be finished."
+          />
 
           {/* The one imagery field in the app that is still paste-only, and
               deliberately: a stored image lives at

@@ -85,7 +85,19 @@ export const CreateProjectSchema = z
     name: z.string().min(2).max(120),
     location: z.string().min(2).max(200),
     currency: z.string().refine(isSupportedCurrency, 'Unsupported currency'),
-    expectedCompletion: z.string().refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid date'),
+    // Parseable *and* plausible. The second half is not pedantry: a native
+    // date input accepts a year up to 275760, so a mistyped "202812" reaches
+    // here as a date the database would happily store, and every schedule,
+    // statement and arrears calculation downstream would then be reasoning
+    // about a building due in the year 202812. Bounded on both sides because
+    // a completion date before 1900 is as certainly a typo as one after 2199.
+    expectedCompletion: z
+      .string()
+      .refine((v) => !Number.isNaN(Date.parse(v)), 'Invalid date')
+      .refine((v) => {
+        const year = new Date(v).getUTCFullYear()
+        return year >= 1900 && year <= 2199
+      }, 'Check the completion date — the year looks wrong.'),
     floors: z.coerce.number().int().min(1).max(200),
     unitsPerFloor: z.coerce.number().int().min(1).max(100),
     startFloor: z.coerce.number().int().min(0).max(200),
