@@ -29,6 +29,17 @@ export function NewDeveloperForm() {
           anywhere it can be read again.
         </p>
         <dl className="mt-4 space-y-2 rounded-xl border border-line bg-page p-3">
+          {/* The sign-in address is part of the credential, not a footnote.
+              Without it the obvious move is to try these here, on the console
+              they were just handed out by — which refuses them, because this
+              door only reads platform operators. That happened the first time
+              a developer was created for real. */}
+          <div>
+            <dt className="text-xs text-muted">They sign in at</dt>
+            <dd className="break-all font-semibold text-ink">
+              /login <span className="font-normal text-muted">— not this console</span>
+            </dd>
+          </div>
           <div>
             <dt className="text-xs text-muted">Email</dt>
             <dd className="break-all font-semibold text-ink">{state.adminEmail}</dd>
