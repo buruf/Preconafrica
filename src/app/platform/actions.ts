@@ -1,12 +1,14 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { redirect } from 'next/navigation'
 import { signOut } from '@/server/auth'
 import { requirePlatformAdmin } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import {
   changePlatformPassword,
   createDeveloper,
+  deleteDeveloper,
   setDeveloperSuspended
 } from '@/server/services/platform'
 
@@ -82,4 +84,17 @@ export async function changePlatformPasswordAction(_prev: string | undefined, fo
   // deliberately means landing there with an explanation instead of what looks
   // like a random logout.
   await signOut({ redirectTo: '/platform/login?changed=1' })
+}
+
+export async function deleteDeveloperAction(orgId: string) {
+  const actor = await requirePlatformAdmin()
+
+  try {
+    await deleteDeveloper(actor, orgId)
+  } catch (error) {
+    return error instanceof ServiceError ? error.message : 'That developer could not be deleted.'
+  }
+
+  revalidatePath('/platform')
+  redirect('/platform')
 }

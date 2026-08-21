@@ -4,6 +4,7 @@ import { prisma } from '@/server/db'
 import { requirePlatformAdmin } from '@/server/session'
 import { Card, StatusPill } from '@/components/ui'
 import { SuspendButton } from './SuspendButton'
+import { DeleteButton } from './DeleteButton'
 
 /**
  * One developer: counts, status, and the suspend control.
@@ -24,7 +25,19 @@ export default async function DeveloperPage({ params }: { params: { id: string }
       slug: true,
       suspendedAt: true,
       createdAt: true,
-      _count: { select: { projects: true, buyers: true, sales: true, users: true } }
+      _count: {
+        select: {
+          projects: true,
+          buyers: true,
+          sales: true,
+          users: true,
+          // Not displayed — read only to decide whether deleting is offered.
+          // The same five counts the service checks, so the button appears
+          // exactly when the action would succeed.
+          payments: true,
+          documents: true
+        }
+      }
     }
   })
   if (!dev) notFound()
@@ -35,6 +48,15 @@ export default async function DeveloperPage({ params }: { params: { id: string }
     ['Sales', dev._count.sales],
     ['Staff accounts', dev._count.users]
   ]
+
+  // Staff are excluded on purpose: a developer always has the admin created
+  // alongside it, so counting them would make nothing ever deletable.
+  const isEmpty =
+    dev._count.projects === 0 &&
+    dev._count.buyers === 0 &&
+    dev._count.sales === 0 &&
+    dev._count.payments === 0 &&
+    dev._count.documents === 0
 
   return (
     <main className="mx-auto max-w-3xl p-4 sm:p-6">
@@ -92,6 +114,22 @@ export default async function DeveloperPage({ params }: { params: { id: string }
           suspended={dev.suspendedAt !== null}
         />
       </Card>
+
+      {/* Only for a developer with nothing in it — a mistyped one, in other
+          words. Anything with real data is suspended and never deleted, so the
+          control is absent rather than present-and-refusing: an operator should
+          not have to discover the rule by tripping over it. */}
+      {isEmpty ? (
+        <Card className="mt-4">
+          <h2 className="text-base font-semibold text-ink">Delete</h2>
+          <p className="mb-3 mt-1 text-sm text-muted">
+            {dev.name} has no projects, buyers or sales, so it can still be removed — useful if
+            the name or short name was typed wrong. Once it has data, this option disappears and
+            suspending is the only way to stop it.
+          </p>
+          <DeleteButton orgId={dev.id} developerName={dev.name} />
+        </Card>
+      ) : null}
     </main>
   )
 }

@@ -240,3 +240,75 @@ export async function changePlatformPassword(
     })
   })
 }
+
+/**
+ * Remove a developer that has nothing in it.
+ *
+ * This exists for exactly one situation: a mistyped developer, created a minute
+ * ago, with no projects, no buyers and no sales. The short name is fixed at
+ * creation, so before this a typo was permanent and the honest answer was "live
+ * with it".
+ *
+ * **Empty is checked against the database, not asserted by the caller.** Five
+ * counts, all of which must be zero. Projects, buyers and sales are the obvious
+ * three; payments and documents are counted in their own right rather than
+ * inferred from "no sales, therefore no payments". That inference happens to be
+ * true today — `Sale` is `onDelete: Restrict` from both — but this check must
+ * not depend on that staying true, because being wrong here destroys money
+ * history permanently.
+ *
+ * Staff accounts are not counted and do not block: a developer always has at
+ * least the admin created alongside it, and `Organization.users` cascades, so
+ * deleting an empty developer takes exactly the account that was made for it.
+ * That cascade is also precisely why the emptiness rule has to be strict.
+ *
+ * Anything with real data is **suspended, never deleted**. There is no force
+ * flag and should not be one: a system of record that can be made to forget a
+ * sale is not a system of record.
+ */
+export async function deleteDeveloper(actor: PlatformActor, orgId: string): Promise<void> {
+  const org = await prisma.organization.findUnique({
+    where: { id: orgId },
+    select: {
+      id: true,
+      name: true,
+      _count: { select: { projects: true, buyers: true, sales: true, payments: true, documents: true } }
+    }
+  })
+  if (!org) throw new ServiceError('That developer was not found.', 'NOT_FOUND')
+
+  const holdings: Array<[string, number]> = [
+    ['project', org._count.projects],
+    ['buyer', org._count.buyers],
+    ['sale', org._count.sales],
+    ['payment', org._count.payments],
+    ['document', org._count.documents]
+  ]
+  const blocking = holdings.filter(([, count]) => count > 0)
+
+  if (blocking.length > 0) {
+    // Names what is in the way, so the operator knows whether they picked the
+    // wrong developer or genuinely meant to suspend one.
+    const what = blocking
+      .map(([noun, count]) => `${count} ${noun}${count === 1 ? '' : 's'}`)
+      .join(', ')
+    throw new ServiceError(
+      `${org.name} is not empty — it has ${what}. Suspend it instead; nothing is ever deleted once a developer has data.`,
+      'CONFLICT'
+    )
+  }
+
+  await prisma.$transaction(async (tx) => {
+    // Recorded before the delete, in the same transaction. `PlatformAuditEntry`
+    // holds no foreign key to `Organization` precisely so the record outlives
+    // the row — the log has to be able to say what is gone.
+    await recordPlatformAudit(tx, actor, {
+      action: 'developer.deleted',
+      entityType: 'Organization',
+      entityId: org.id,
+      entityLabel: org.name
+    })
+
+    await tx.organization.delete({ where: { id: org.id } })
+  })
+}
