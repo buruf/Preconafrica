@@ -62,9 +62,12 @@ export function assertRole(actor: SessionActor, allowed: Role[]): void {
  * query the deactivation check was already making.
  */
 export async function requireUser(): Promise<SessionActor> {
-  const actor = await requireUserOrNull()
-  if (!actor) redirect('/login')
-  return actor
+  const outcome = await resolveSession()
+  // Suspended staff go somewhere that explains itself rather than to a login
+  // screen that looks like it is rejecting a password they know is right.
+  if (outcome.kind === 'suspended') redirect('/suspended')
+  if (outcome.kind === 'unauthenticated') redirect('/login')
+  return outcome.actor
 }
 
 /**
@@ -84,8 +87,30 @@ export async function requireUser(): Promise<SessionActor> {
  * through this module now; nothing outside it should call `auth()`.
  */
 export async function requireUserOrNull(): Promise<SessionActor | null> {
+  const outcome = await resolveSession()
+  return outcome.kind === 'actor' ? outcome.actor : null
+}
+
+/**
+ * Why a session did not produce an actor, not merely that it did not.
+ *
+ * `requireUserOrNull` collapses every failure to null, which is the right
+ * answer for an API route — a fetch cannot be told a story. A *page* can, and
+ * one case genuinely needs telling: a suspended developer's staff cannot sign
+ * in, so they also cannot read their own audit log, and bouncing them to
+ * /login leaves them with no way on earth to discover why. They see a login
+ * screen that appears to reject a password they know is right.
+ *
+ * So this distinguishes the three, and `requireUser` routes on it.
+ */
+export type SessionOutcome =
+  | { kind: 'actor'; actor: SessionActor }
+  | { kind: 'unauthenticated' }
+  | { kind: 'suspended'; since: Date; reason: string | null }
+
+export async function resolveSession(): Promise<SessionOutcome> {
   const session = await auth()
-  if (!session?.user?.id) return null
+  if (!session?.user?.id) return { kind: 'unauthenticated' }
 
   // Before anything else, and before the user table is touched at all: a
   // platform operator's token must never resolve to a developer's session.
@@ -94,7 +119,7 @@ export async function requireUserOrNull(): Promise<SessionActor | null> {
   // organisation" in Prisma, it is *no constraint*, and returns every tenant's
   // rows. A token carrying no `kind` was minted before the claim existed and
   // is read as a developer's, which is what it is.
-  if (session.user.kind === 'platform') return null
+  if (session.user.kind === 'platform') return { kind: 'unauthenticated' }
 
   const user = await prisma.user.findUnique({
     where: { id: session.user.id },
@@ -103,27 +128,36 @@ export async function requireUserOrNull(): Promise<SessionActor | null> {
     select: {
       disabledAt: true,
       passwordChangedAt: true,
-      org: { select: { suspendedAt: true } }
+      org: { select: { suspendedAt: true, suspensionReason: true } }
     }
   })
-  if (!user || user.disabledAt !== null) return null
+  if (!user || user.disabledAt !== null) return { kind: 'unauthenticated' }
   if (sessionOutdatedByPasswordChange(user.passwordChangedAt, session.user.tokenIssuedAt)) {
-    return null
+    return { kind: 'unauthenticated' }
   }
 
   // A suspended developer's staff stop working immediately; their buyers do
   // not. The dispute is between the platform and the developer, and someone
   // paying for a flat keeps the contracts and receipts they already hold.
   // Nothing is deleted either way — see `Organization.suspendedAt`.
-  if (user.org.suspendedAt !== null && session.user.role !== 'BUYER') return null
+  if (user.org.suspendedAt !== null && session.user.role !== 'BUYER') {
+    return {
+      kind: 'suspended',
+      since: user.org.suspendedAt,
+      reason: user.org.suspensionReason
+    }
+  }
 
   return {
-    userId: session.user.id,
-    orgId: session.user.orgId,
-    role: session.user.role,
-    buyerId: session.user.buyerId,
-    fullName: session.user.name ?? '',
-    email: session.user.email ?? ''
+    kind: 'actor',
+    actor: {
+      userId: session.user.id,
+      orgId: session.user.orgId,
+      role: session.user.role,
+      buyerId: session.user.buyerId,
+      fullName: session.user.name ?? '',
+      email: session.user.email ?? ''
+    }
   }
 }
 

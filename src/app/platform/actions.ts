@@ -47,11 +47,11 @@ export async function createDeveloperAction(_prev: unknown, formData: FormData) 
   }
 }
 
-export async function setSuspendedAction(orgId: string, suspended: boolean) {
+export async function setSuspendedAction(orgId: string, suspended: boolean, reason?: string) {
   const actor = await requirePlatformAdmin()
 
   try {
-    await setDeveloperSuspended(actor, orgId, suspended)
+    await setDeveloperSuspended(actor, orgId, suspended, reason)
   } catch (error) {
     return error instanceof ServiceError ? error.message : 'That change could not be saved.'
   }

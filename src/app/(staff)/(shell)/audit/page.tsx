@@ -288,5 +288,9 @@ const LINK_LABEL: Record<string, string> = {
 const ROLE_LABEL: Record<string, string> = {
   ADMIN: 'Administrator',
   AGENT: 'Sales agent',
-  BUYER: 'Buyer'
+  BUYER: 'Buyer',
+  // Not one of this organisation's roles, and the label says so plainly: it
+  // marks the two entries nobody here wrote — being suspended, and having the
+  // suspension lifted. Without it the badge rendered the raw 'PLATFORM'.
+  PLATFORM: 'PreCon Africa'
 }

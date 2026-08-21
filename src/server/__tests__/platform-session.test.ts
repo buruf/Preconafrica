@@ -26,7 +26,7 @@ vi.mock('@/server/db', () => ({
 }))
 
 const { prisma } = await import('@/server/db')
-const { requireUserOrNull, requirePlatformAdminOrNull } = await import('@/server/session')
+const { requireUserOrNull, requirePlatformAdminOrNull, resolveSession } = await import('@/server/session')
 
 const LIVE_USER = { disabledAt: null, passwordChangedAt: null, org: { suspendedAt: null } }
 
@@ -151,5 +151,64 @@ describe('a platform admin is revoked like any other account', () => {
     authMock.mockResolvedValue(session({ kind: 'platform', orgId: undefined }))
     const admin = await requirePlatformAdminOrNull()
     expect(admin).toMatchObject({ userId: 'u1', kind: 'platform' })
+  })
+})
+
+describe('a suspended organisation tells its staff why', () => {
+  const SUSPENDED = {
+    disabledAt: null,
+    passwordChangedAt: null,
+    org: {
+      suspendedAt: new Date('2026-08-18T00:00:00Z'),
+      suspensionReason: 'Subscription unpaid since June.'
+    }
+  }
+
+  it('reports suspension distinctly from being signed out', async () => {
+    // The whole point: staff who cannot sign in also cannot read their audit
+    // log, so being bounced to /login with no explanation leaves them with no
+    // way to find out. The caller needs to tell these two apart.
+    authMock.mockResolvedValue(session({ role: 'ADMIN' }))
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(SUSPENDED as never)
+
+    const outcome = await resolveSession()
+    expect(outcome.kind).toBe('suspended')
+    if (outcome.kind === 'suspended') {
+      expect(outcome.reason).toBe('Subscription unpaid since June.')
+      expect(outcome.since).toEqual(new Date('2026-08-18T00:00:00Z'))
+    }
+  })
+
+  it('reports a suspension with no reason as suspended all the same', async () => {
+    authMock.mockResolvedValue(session({ role: 'AGENT' }))
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      ...SUSPENDED,
+      org: { ...SUSPENDED.org, suspensionReason: null }
+    } as never)
+
+    const outcome = await resolveSession()
+    expect(outcome.kind).toBe('suspended')
+    if (outcome.kind === 'suspended') expect(outcome.reason).toBeNull()
+  })
+
+  it('does not report a buyer as suspended, because they are not', async () => {
+    authMock.mockResolvedValue(session({ role: 'BUYER', buyerId: 'b1' }))
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(SUSPENDED as never)
+
+    const outcome = await resolveSession()
+    expect(outcome.kind).toBe('actor')
+  })
+
+  it('still returns null from requireUserOrNull, so API routes answer 401', async () => {
+    // A suspended developer's staff must not keep pulling PDFs. The richer
+    // outcome is for pages, which can navigate; a route handler cannot.
+    authMock.mockResolvedValue(session({ role: 'ADMIN' }))
+    vi.mocked(prisma.user.findUnique).mockResolvedValue(SUSPENDED as never)
+    expect(await requireUserOrNull()).toBeNull()
+  })
+
+  it('reports an unauthenticated visitor as unauthenticated, not suspended', async () => {
+    authMock.mockResolvedValue(null)
+    expect((await resolveSession()).kind).toBe('unauthenticated')
   })
 })

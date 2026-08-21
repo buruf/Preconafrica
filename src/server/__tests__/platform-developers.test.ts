@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const auditCalls: Array<Record<string, unknown>> = []
 
+const orgAuditCalls: Array<{ actor: Record<string, unknown>; input: Record<string, unknown> }> = []
+
+vi.mock('@/server/audit/record', () => ({
+  recordAudit: vi.fn(async (_tx: unknown, actor: Record<string, unknown>, input: Record<string, unknown>) => {
+    orgAuditCalls.push({ actor, input })
+  })
+}))
+
 vi.mock('@/server/audit/platform-record', () => ({
   recordPlatformAudit: vi.fn(async (_tx: unknown, _actor: unknown, input: Record<string, unknown>) => {
     auditCalls.push(input)
@@ -42,6 +50,7 @@ const VALID = {
 
 beforeEach(() => {
   auditCalls.length = 0
+  orgAuditCalls.length = 0
   orgCreate.mockClear()
   userCreate.mockClear()
   orgUpdate.mockClear()
@@ -117,5 +126,57 @@ describe('setDeveloperSuspended', () => {
     await setDeveloperSuspended(PLATFORM, 'org_1', false)
     expect(orgUpdate.mock.calls[0][0].data.suspendedAt).toBeNull()
     expect(auditCalls[0]).toMatchObject({ action: 'developer.unsuspended' })
+  })
+
+  it('stores the reason, trimmed, because it is rendered verbatim', async () => {
+    await setDeveloperSuspended(PLATFORM, 'org_1', true, '  Subscription unpaid since June.  ')
+    expect(orgUpdate.mock.calls[0][0].data.suspensionReason).toBe(
+      'Subscription unpaid since June.'
+    )
+  })
+
+  it('treats a blank reason as no reason rather than an empty one', async () => {
+    // An empty string pretending to be a reason renders as a blank box on the
+    // screen that is supposed to explain the lockout.
+    await setDeveloperSuspended(PLATFORM, 'org_1', true, '   ')
+    expect(orgUpdate.mock.calls[0][0].data.suspensionReason).toBeNull()
+  })
+
+  it('clears the reason when the suspension is lifted', async () => {
+    // Otherwise a stale reason sits beside an active organisation.
+    await setDeveloperSuspended(PLATFORM, 'org_1', false, 'ignored')
+    expect(orgUpdate.mock.calls[0][0].data.suspensionReason).toBeNull()
+  })
+
+  it("also writes into the developer's own log, where they can read it", async () => {
+    // The platform log is one the developer cannot see. This is the copy in
+    // the place their admin will actually look, and it outlives the lockout
+    // screen that explained it at the time.
+    await setDeveloperSuspended(PLATFORM, 'org_1', true, 'Subscription unpaid since June.')
+
+    expect(orgAuditCalls).toHaveLength(1)
+    expect(orgAuditCalls[0].input).toMatchObject({
+      action: 'org.suspended',
+      entityType: 'Organization',
+      context: { reason: 'Subscription unpaid since June.' }
+    })
+  })
+
+  it('names the platform as the actor, never a role their staff hold', async () => {
+    await setDeveloperSuspended(PLATFORM, 'org_1', true)
+
+    // PLATFORM rather than ADMIN: no admin of theirs did this, and a false
+    // actor is the one thing an audit log must never contain.
+    expect(orgAuditCalls[0].actor).toMatchObject({
+      role: 'PLATFORM',
+      fullName: 'PreCon Africa'
+    })
+    // Their organisation, so it lands in their log rather than anyone else's.
+    expect(orgAuditCalls[0].actor.orgId).toBe('org_1')
+  })
+
+  it('records the restoration in their log too', async () => {
+    await setDeveloperSuspended(PLATFORM, 'org_1', false)
+    expect(orgAuditCalls[0].input).toMatchObject({ action: 'org.unsuspended' })
   })
 })

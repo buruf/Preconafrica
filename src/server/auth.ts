@@ -48,6 +48,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const ok = await bcrypt.compare(parsed.data.password, hash)
         if (!user || !ok) return null
 
+        // PLATFORM exists in `UserRole` only so the audit log can name the
+        // platform operator when it acts on a developer (see the enum's
+        // comment). Nothing writes it to a `User`, so a row carrying it is a
+        // corrupted record rather than an account — refused here, at the door,
+        // rather than left to fail somewhere further in.
+        //
+        // This check is also what keeps the session's role a genuine narrowing
+        // of the database's rather than a cast over it: TypeScript rejects the
+        // wider type without it, which is the compiler noticing the same gap.
+        if (user.role === 'PLATFORM') return null
+
         return {
           id: user.id,
           email: user.email,

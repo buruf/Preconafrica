@@ -394,6 +394,17 @@ export function describeAuditEntry(entry: AuditEntryView): { sentence: string; h
       case 'org.updated':
         return `${who} changed the organisation${changes ? ` — ${changes}` : ''}`
 
+      // Written by the platform, into this developer's own log, so their admin
+      // can find out what happened after access comes back — by which time the
+      // screen that explained the lockout is gone. `who` reads "PreCon Africa"
+      // rather than an operator's personal name.
+      case 'org.suspended':
+        return `${who} suspended this organisation's access${
+          context.reason ? ` — “${context.reason}”` : ''
+        }`
+      case 'org.unsuspended':
+        return `${who} restored this organisation's access`
+
       default:
         // Unknown verb. Say what is actually known, in that order, so the row
         // is still useful: who, the raw action, and what it was about.

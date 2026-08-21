@@ -73,7 +73,16 @@ import type { AuditChange, AuditContext } from '@/domain/audit'
 export interface AuditActor {
   userId: string
   orgId: string
-  role: 'ADMIN' | 'AGENT' | 'BUYER'
+  /**
+   * The three real roles, plus PLATFORM for the one actor that is not a member
+   * of the organisation it is acting on: the platform operator suspending a
+   * developer, recorded in *that developer's* log so their admin can read it.
+   *
+   * No `User` ever holds PLATFORM — see the enum's comment in schema.prisma.
+   * It is here because the alternative was writing that event as ADMIN, which
+   * would put a false actor in the one table that must never contain one.
+   */
+  role: 'ADMIN' | 'AGENT' | 'BUYER' | 'PLATFORM'
   fullName: string
 }
 

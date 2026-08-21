@@ -15,6 +15,19 @@ enum UserRole {
   ADMIN
   AGENT
   BUYER
+
+  /// **Never held by a `User`.** This value exists so `AuditEntry.actorRole`
+  /// can name the platform operator when an action taken from the console —
+  /// suspending a developer — is recorded in *that developer's own* log, where
+  /// they can read it. The alternative was recording it as ADMIN, which would
+  /// be a false record in the one table that must never contain one.
+  ///
+  /// Nothing writes it to `User.role`, and `SessionActor['role']` is a separate
+  /// hand-written union of the three real roles, so a row carrying this could
+  /// not be admitted anywhere: `assertRole` matches against that union and
+  /// would refuse it, `requireStaff` and `requireAdmin` with it. It fails
+  /// closed, which is the direction an accident here has to fail.
+  PLATFORM
 }
 
 enum UnitStatus {
@@ -101,6 +114,14 @@ model Organization {
   /// statements someone already holds for a flat they are paying for stay
   /// downloadable. Nothing financial is ever deleted by a suspension.
   suspendedAt DateTime?
+  /// Why, in the operator's own words, shown to the suspended developer's own
+  /// staff on the screen that tells them they are locked out.
+  ///
+  /// Optional, because "suspended with no reason given" is an honest state and
+  /// forcing a sentence would only produce empty ones. Cleared when the
+  /// suspension is lifted, so a stale reason can never sit beside an active
+  /// organisation.
+  suspensionReason String?
   createdAt   DateTime  @default(now())
 
   users         User[]

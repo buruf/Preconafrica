@@ -5,6 +5,7 @@ import { prisma } from '@/server/db'
 import type { PlatformActor } from '@/server/session'
 import { ServiceError } from '@/server/services/errors'
 import { recordPlatformAudit } from '@/server/audit/platform-record'
+import { recordAudit } from '@/server/audit/record'
 import { PasswordSchema } from '@/domain/password-reset'
 
 /**
@@ -148,12 +149,21 @@ export async function createDeveloper(
 export async function setDeveloperSuspended(
   actor: PlatformActor,
   orgId: string,
-  suspended: boolean
+  suspended: boolean,
+  reason?: string
 ): Promise<void> {
+  // Trimmed to null rather than kept as '': "no reason given" is one state, and
+  // an empty string pretending to be a reason would render as a blank box on
+  // the screen that explains the lockout.
+  const trimmed = reason?.trim()
+  const suspensionReason = suspended && trimmed ? trimmed.slice(0, 500) : null
+
   await prisma.$transaction(async (tx) => {
     const org = await tx.organization.update({
       where: { id: orgId },
-      data: { suspendedAt: suspended ? new Date() : null },
+      // The reason is cleared whenever the suspension is lifted, so a stale one
+      // can never sit beside an active organisation.
+      data: { suspendedAt: suspended ? new Date() : null, suspensionReason },
       select: { id: true, name: true }
     })
 
@@ -161,8 +171,42 @@ export async function setDeveloperSuspended(
       action: suspended ? 'developer.suspended' : 'developer.unsuspended',
       entityType: 'Organization',
       entityId: org.id,
-      entityLabel: org.name
+      entityLabel: org.name,
+      context: suspensionReason ? { reason: suspensionReason } : {}
     })
+
+    /**
+     * The same event, written a second time into the *developer's own* log.
+     *
+     * Not duplication for its own sake: the two logs have different readers and
+     * neither can see the other. The platform log answers "what have I done";
+     * this answers "what happened to us", in the only place a developer's admin
+     * will ever look, and it is still there after the suspension is lifted and
+     * the screen that explained it is gone.
+     *
+     * `actorRole: 'PLATFORM'` is why that enum value exists. Recording it as
+     * ADMIN would put a false actor in the one table that must never hold one —
+     * no admin of theirs did this.
+     */
+    await recordAudit(
+      tx,
+      {
+        userId: actor.userId,
+        orgId: org.id,
+        role: 'PLATFORM',
+        // Not the operator's personal name. What the developer needs to know is
+        // that the platform did this, and an individual's name in another
+        // tenant's log is information they have no use for.
+        fullName: 'PreCon Africa'
+      },
+      {
+        action: suspended ? 'org.suspended' : 'org.unsuspended',
+        entityType: 'Organization',
+        entityId: org.id,
+        entityLabel: org.name,
+        context: suspensionReason ? { reason: suspensionReason } : {}
+      }
+    )
   })
 }
 
