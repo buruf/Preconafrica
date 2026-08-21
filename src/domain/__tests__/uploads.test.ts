@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest'
 import {
   BLOB_HOST_SUFFIX,
   BlobPathError,
+  CLIENT_MAX_EDGE,
+  MAX_REQUEST_BYTES,
   MAX_UPLOAD_BYTES,
   blobPathFor,
+  needsClientDownscale,
   checkUpload,
   isManagedBlobUrl,
   isOwnedBlobUrl,
@@ -289,5 +292,49 @@ describe('isOwnedBlobUrl', () => {
     expect(isOwnedBlobUrl(null, 'org_sunrise')).toBe(false)
     expect(isOwnedBlobUrl('', 'org_sunrise')).toBe(false)
     expect(isOwnedBlobUrl(ours, '../')).toBe(false)
+  })
+})
+
+describe('the browser-side size cap', () => {
+  it('leaves an ordinary image alone', () => {
+    // Re-encoding a small PNG floor plan as JPEG would lose linework to solve
+    // a problem it does not have.
+    expect(needsClientDownscale(900 * 1024)).toBe(false)
+    expect(needsClientDownscale(MAX_REQUEST_BYTES)).toBe(false)
+  })
+
+  it('shrinks anything over the request cap', () => {
+    expect(needsClientDownscale(MAX_REQUEST_BYTES + 1)).toBe(true)
+    // A phone photograph, which is what this exists for.
+    expect(needsClientDownscale(8 * 1024 * 1024)).toBe(true)
+  })
+
+  it('sits below the platform limit rather than at it', () => {
+    // Vercel rejects a request body over 4.5MB before the route runs, and a
+    // multipart body carries field names and boundaries besides the file — so
+    // the file itself has to be comfortably under, not exactly at.
+    expect(MAX_REQUEST_BYTES).toBeLessThan(4.5 * 1024 * 1024)
+  })
+
+  it('is far below the server guard, which is a different limit', () => {
+    // MAX_UPLOAD_BYTES guards sharp against decoding something absurd. It was
+    // never the binding constraint, which is why a 6MB photo passed it and
+    // then failed with no message the app had written.
+    expect(MAX_REQUEST_BYTES).toBeLessThan(MAX_UPLOAD_BYTES)
+  })
+
+  it('keeps floor plans at a higher resolution than photographs', () => {
+    // Linework and room labels have to stay legible; a building photo does not
+    // carry text someone has to read.
+    expect(CLIENT_MAX_EDGE.layout).toBeGreaterThan(CLIENT_MAX_EDGE.building)
+  })
+
+  it('mirrors the server profiles it is a copy of', () => {
+    // Duplicated because the server module imports sharp and cannot be bundled
+    // for a browser. Sending more pixels than these would upload work the
+    // server discards on arrival.
+    expect(CLIENT_MAX_EDGE.building).toBe(2000)
+    expect(CLIENT_MAX_EDGE.render).toBe(2000)
+    expect(CLIENT_MAX_EDGE.layout).toBe(2400)
   })
 })

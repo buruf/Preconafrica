@@ -34,6 +34,54 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 /** Below this there is nothing to sniff; an empty file is a failed drag, not an image. */
 export const MIN_UPLOAD_BYTES = 16
 
+/**
+ * The largest body the *platform* will carry, which is a different limit from
+ * the one above and much lower.
+ *
+ * Vercel caps a serverless function's request body at 4.5MB and rejects
+ * anything bigger before the route runs at all — so the rejection is not JSON,
+ * carries none of this app's error messages, and surfaced to the uploader as a
+ * bare "That upload failed. Try again." A photograph taken on a phone is
+ * routinely 4–12MB, so this was every real building photo.
+ *
+ * Set below the cap rather than at it: a multipart body carries field names and
+ * boundaries as well as the file, so the file itself has to be comfortably
+ * under. `MAX_UPLOAD_BYTES` stays where it is — it is the server's own guard
+ * against decoding something absurd, and it is not the binding constraint here.
+ */
+export const MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+/**
+ * The long edge to shrink to in the browser, per slot, mirroring
+ * `IMAGE_PROFILES` in server/media/downscale.ts.
+ *
+ * Duplicated rather than imported because that module pulls in `sharp`, which
+ * cannot exist in a browser bundle. The values are the ones the server would
+ * downscale to anyway, so sending anything larger is uploading pixels over a
+ * phone connection for the server to immediately discard.
+ *
+ * Kept in the domain layer, beside the other upload rules, so the two are read
+ * together the next time either changes.
+ */
+export const CLIENT_MAX_EDGE: Record<UploadKind, number> = {
+  building: 2000,
+  render: 2000,
+  // Higher, and deliberately: linework and room labels have to stay legible.
+  layout: 2400,
+  logo: 1000
+}
+
+/**
+ * Whether the browser should re-encode before uploading.
+ *
+ * Only when it has to. A file already under the request cap goes up untouched,
+ * because re-encoding a small PNG floor plan as JPEG would lose linework to
+ * solve a problem it does not have.
+ */
+export function needsClientDownscale(bytes: number): boolean {
+  return bytes > MAX_REQUEST_BYTES
+}
+
 /** The bitmap formats a browser will let someone pick and this server can decode. */
 export type UploadedImageFormat = 'png' | 'jpeg' | 'webp'
 
