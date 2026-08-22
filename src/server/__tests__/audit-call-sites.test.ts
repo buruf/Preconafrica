@@ -72,6 +72,10 @@ const MUST_RECORD: Array<{ file: string; actions: string[] }> = [
   { file: 'services/payments.ts', actions: ['payment.recorded', 'payment.voided', 'sale.status_changed'] },
   { file: 'services/sales.ts', actions: ['sale.created', 'unit.status_changed', 'user.buyer_registered'] },
   { file: 'services/units.ts', actions: ['unit.updated', 'unit.layout_assigned'] },
+  {
+    file: 'services/project-images.ts',
+    actions: ['project.image_added', 'project.image_captioned', 'project.image_removed']
+  },
   { file: 'services/projects.ts', actions: ['project.created', 'project.updated'] },
   { file: 'services/team.ts', actions: ['user.agent_added', 'user.agent_deactivated', 'org.updated'] },
   { file: 'services/passwords.ts', actions: ['user.password_changed', 'user.password_reset'] },

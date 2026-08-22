@@ -7,7 +7,9 @@ import { installmentFeeSummary } from '@/domain/schedule'
 import { projectFeeConfig } from '@/server/services/sales'
 import { Card, PageHeader, StatCard, StatusLegend, UnitTile } from '@/components/ui'
 import { MediaImage } from '@/components/media'
+import { prisma } from '@/server/db'
 import { HeroImageForm } from './HeroImageForm'
+import { GalleryForm } from './GalleryForm'
 
 /**
  * The floor plate.
@@ -37,6 +39,16 @@ export default async function ProjectPage({ params }: { params: { id: string } }
     throw error
   }
   const { project, floors, totals } = inventory
+
+  // Scoped through the project's org rather than by project id alone. The
+  // inventory query above has already established this project is the actor's,
+  // but repeating the constraint costs nothing and means this query is safe
+  // read on its own, without depending on a check twenty lines away.
+  const galleryImages = await prisma.projectImage.findMany({
+    where: { projectId: project.id, project: { orgId: actor.orgId } },
+    select: { id: true, url: true, caption: true },
+    orderBy: { position: 'asc' }
+  })
 
   return (
     <>
@@ -79,9 +91,39 @@ export default async function ProjectPage({ params }: { params: { id: string } }
             >
               Import floor plans from a PDF
             </Link>
+            {/* The hero is the building; these are what is inside it. Kept
+                beside the hero because they are the same job — the imagery a
+                buyer sees — and separating them across two screens would make
+                the second one easy never to find. */}
+            <GalleryForm projectId={project.id} images={galleryImages} />
           </>
         ) : null}
       </div>
+
+      {/* Buyers and agents see the gallery too, read-only, below the hero.
+          Rendered only when there is something in it: an empty strip of
+          placeholders would suggest something is missing rather than that
+          nothing has been added. */}
+      {actor.role !== 'ADMIN' && galleryImages.length > 0 ? (
+        <div className="mb-5">
+          <h2 className="mb-2 text-sm font-semibold text-ink">Shared spaces</h2>
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            {galleryImages.map((image) => (
+              <li key={image.id}>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={image.url}
+                  alt={image.caption ?? 'Shared space'}
+                  className="aspect-[4/3] w-full rounded-xl object-cover"
+                />
+                {image.caption ? (
+                  <p className="mt-1 text-xs text-muted">{image.caption}</p>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       <div className="mb-5 grid grid-cols-3 gap-3">
         <StatCard label="Available" value={String(totals.available)} tone="good" />

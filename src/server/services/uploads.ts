@@ -35,7 +35,7 @@ import { putImageBlob } from '@/server/media/blob'
 
 export const UploadScopeSchema = z
   .object({
-    kind: z.enum(['building', 'layout', 'render', 'logo']),
+    kind: z.enum(['building', 'layout', 'render', 'logo', 'gallery']),
     // Ids as they arrive from the form. Presence is checked per-kind below;
     // shape is checked by the path builder, which refuses anything that is not
     // a plain id segment.

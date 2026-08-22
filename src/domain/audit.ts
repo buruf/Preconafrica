@@ -69,6 +69,14 @@ export interface AuditContext {
   documentType?: string
   /** Why. Today: the reason an admin typed when voiding a payment. */
   reason?: string
+  /**
+   * What a gallery photograph is a picture of.
+   *
+   * Carried because it is the only human name these have: an amenity photo has
+   * no unit name and no document number, so an entry without it would read "…
+   * removed a photo" with no way to tell which.
+   */
+  caption?: string
   /** The currency an amount in `amountMinor` is denominated in. */
   currency?: string
   /** A single amount the event is *about* — the payment recorded or voided. */
@@ -366,6 +374,22 @@ export function describeAuditEntry(entry: AuditEntryView): { sentence: string; h
       }
       case 'project.updated':
         return `${who} changed the project ${entry.entityLabel ?? '—'}${changes ? ` — ${changes}` : ''}`
+
+      // The gallery: photographs of what the development shares. The caption is
+      // what names the photo — a blob URL in a log entry says nothing, and
+      // these have no other human label.
+      case 'project.image_added':
+        return `${who} added ${
+          context.caption ? `“${context.caption}”` : 'a photo'
+        } to ${entry.entityLabel ?? 'the project'}`
+      case 'project.image_captioned':
+        return `${who} captioned a photo in ${entry.entityLabel ?? 'the project'}${
+          context.caption ? ` — “${context.caption}”` : ''
+        }`
+      case 'project.image_removed':
+        return `${who} removed ${
+          context.caption ? `“${context.caption}”` : 'a photo'
+        } from ${entry.entityLabel ?? 'the project'}`
 
       case 'document.issued': {
         const type = context.documentType ? humanEnum(context.documentType).toLowerCase() : 'document'

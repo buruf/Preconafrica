@@ -13,6 +13,11 @@ import {
 } from '@/server/services/projects'
 import { UpdateUnitSchema, updateUnit } from '@/server/services/units'
 import { imageFieldFrom } from '@/server/services/media'
+import {
+  addProjectImage,
+  removeProjectImage,
+  updateProjectImageCaption
+} from '@/server/services/project-images'
 import { ServiceError } from '@/server/services/errors'
 
 /**
@@ -117,4 +122,57 @@ export async function updateUnitAction(_prev: string | undefined, formData: Form
   // redraw from cache with the values you replaced.
   revalidatePath(`/projects/${projectId}`)
   revalidatePath(`/projects/${projectId}/units/${unitId}`)
+}
+
+/* ------------------------------------------------------------- the gallery */
+
+/**
+ * Photographs of what the development shares — the gym, the pool, the lobby.
+ *
+ * Three narrow actions rather than one form submit, because a gallery is edited
+ * one photo at a time: add this, rename that, drop the other. Each guards for
+ * itself; a page cannot guard a server action.
+ */
+
+export async function addProjectImageAction(projectId: string, url: string, caption: string) {
+  const actor = await requireAdmin()
+
+  try {
+    await addProjectImage(actor, { projectId, url, caption })
+  } catch (error) {
+    return error instanceof ServiceError ? error.message : 'That photo could not be saved.'
+  }
+
+  revalidatePath(`/projects/${projectId}`)
+  return undefined
+}
+
+export async function captionProjectImageAction(
+  projectId: string,
+  imageId: string,
+  caption: string
+) {
+  const actor = await requireAdmin()
+
+  try {
+    await updateProjectImageCaption(actor, imageId, caption)
+  } catch (error) {
+    return error instanceof ServiceError ? error.message : 'That caption could not be saved.'
+  }
+
+  revalidatePath(`/projects/${projectId}`)
+  return undefined
+}
+
+export async function removeProjectImageAction(projectId: string, imageId: string) {
+  const actor = await requireAdmin()
+
+  try {
+    await removeProjectImage(actor, imageId)
+  } catch (error) {
+    return error instanceof ServiceError ? error.message : 'That photo could not be removed.'
+  }
+
+  revalidatePath(`/projects/${projectId}`)
+  return undefined
 }

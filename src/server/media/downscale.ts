@@ -105,6 +105,19 @@ export const IMAGE_PROFILES: Record<UploadKind, Profile> = {
       { format: 'jpeg', quality: 62 }
     ]
   },
+  gallery: {
+    maxEdge: 2000,
+    // An amenity photograph — the gym, the pool, the lobby. Web only, like a
+    // render and unlike the hero, so it gets the same headroom rather than the
+    // tighter PDF-embed budget. A buyer may scroll past a dozen of these on a
+    // phone, which is the reason not to be more generous than a render.
+    budgetBytes: 250 * 1024,
+    ladder: [
+      { format: 'jpeg', quality: 82 },
+      { format: 'jpeg', quality: 72 },
+      { format: 'jpeg', quality: 62 }
+    ]
+  },
   layout: {
     maxEdge: 2400,
     // The PDF budget, for the same reason `building` carries it: the plan now

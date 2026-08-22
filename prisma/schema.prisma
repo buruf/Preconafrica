@@ -232,11 +232,48 @@ model Project {
   reminderChannels         ReminderChannel[]  @default([EMAIL])
   createdAt                DateTime           @default(now())
 
-  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  units Unit[]
-  sales Sale[]
+  org    Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  units  Unit[]
+  sales  Sale[]
+  images ProjectImage[]
 
   @@index([orgId])
+}
+
+/// A photograph of something the whole development shares — the gym, the pool,
+/// the lobby, the landscaping.
+///
+/// A table rather than a `String[]` on `Project`, and the caption is the whole
+/// reason. An array of URLs cannot hold "Rooftop pool" beside the picture of
+/// one, and a gallery of unlabelled amenity shots asks the buyer to guess what
+/// they are looking at.
+///
+/// It belongs to the project, not to a unit. `Unit.renderImageUrls` is the only
+/// other multi-image field and it is the wrong home for this: a gym is not part
+/// of flat 12B, and putting it there would mean uploading the same photograph
+/// onto all sixty-four units.
+///
+/// `onDelete: Cascade`, unlike everything financial in this schema: these are
+/// presentation, not records. A project cannot be deleted while it has sales
+/// anyway — `Sale` is `Restrict` — so this cascade only ever fires for a project
+/// that never sold anything.
+model ProjectImage {
+  id        String   @id @default(cuid())
+  projectId String
+  /// An https URL from the blob store, same as every other image column.
+  url       String
+  /// What it is a picture of. Optional: a photograph with no caption is worth
+  /// showing, and forcing one only produces empty strings.
+  caption   String?
+  /// Display order. Set to the end on insert, so the gallery reads in the order
+  /// the admin uploaded — the column exists so reordering is a UI change later
+  /// rather than a migration.
+  position  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, position])
 }
 
 model Unit {

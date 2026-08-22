@@ -68,7 +68,10 @@ export const CLIENT_MAX_EDGE: Record<UploadKind, number> = {
   render: 2000,
   // Higher, and deliberately: linework and room labels have to stay legible.
   layout: 2400,
-  logo: 1000
+  logo: 1000,
+  // A shared amenity — the gym, the pool, the lobby. The same kind of
+  // photograph of the same building as the hero, so the same ceiling.
+  gallery: 2000
 }
 
 /**
@@ -86,7 +89,7 @@ export function needsClientDownscale(bytes: number): boolean {
 export type UploadedImageFormat = 'png' | 'jpeg' | 'webp'
 
 /** The four slots an image can occupy. Each has its own size and encoding profile. */
-export type UploadKind = 'building' | 'layout' | 'render' | 'logo'
+export type UploadKind = 'building' | 'layout' | 'render' | 'logo' | 'gallery'
 
 /** PNG's eight-byte signature, per the spec's §5.2. */
 const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
@@ -255,6 +258,10 @@ export function blobPathFor(input: BlobPathInput): string {
   const project = `${org}/project/${segment('projectId', input.projectId)}`
 
   if (input.kind === 'building') return `${project}/hero-${token}.${ext}`
+
+  // An amenity photograph belongs to the whole development, never to one unit —
+  // a gym is not part of flat 12B.
+  if (input.kind === 'gallery') return `${project}/gallery-${token}.${ext}`
 
   // A layout without a unit is a drawing shared by several of them — the PDF
   // importer uploads one page for every 3-bedroom unit at once. It belongs to
